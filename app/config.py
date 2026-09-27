@@ -137,6 +137,10 @@ class Settings:
     cookies_file: Path | None = None
     cookies_from_browser: str | None = None
     allow_user_cookies: bool = True
+    # Optional outbound proxy for yt-dlp (http://, https://, socks5://); per-platform overrides
+    # via <PLATFORM>_PROXY. Residential proxies are the only real fix for cloud-IP blocks.
+    proxy_url: str | None = None
+    platform_proxies: dict[str, str] = field(default_factory=dict)
     # local = use the operator's own browser login for requests from this machine,
     # always = for every request (single-user deployments only), off = never
     auto_browser_cookies: str = "local"
@@ -216,6 +220,12 @@ class Settings:
             cookies_file=_path("COOKIES_FILE") or _path("IG_COOKIES_FILE"),
             cookies_from_browser=_str("COOKIES_FROM_BROWSER") or _str("IG_COOKIES_FROM_BROWSER"),
             allow_user_cookies=_bool("ALLOW_USER_COOKIES", True),
+            proxy_url=_str("PROXY_URL"),
+            platform_proxies={
+                platform: value
+                for platform in PLATFORMS
+                if (value := _str(f"{platform.upper()}_PROXY"))
+            },
             auto_browser_cookies=auto_browser,
             browser_cookie_order=browser_order,
             ffmpeg_bin=_str("FFMPEG_BIN", "ffmpeg") or "ffmpeg",
@@ -246,6 +256,9 @@ class Settings:
     @property
     def jobs_dir(self) -> Path:
         return self.data_dir / "jobs"
+
+    def proxy_for(self, platform: str) -> str | None:
+        return self.platform_proxies.get(platform) or self.proxy_url
 
     def login_configured(self, platform: str) -> bool:
         return bool(

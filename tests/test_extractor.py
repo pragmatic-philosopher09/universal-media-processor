@@ -191,3 +191,24 @@ def test_friendly_errors():
     assert friendly_error(
         "ERROR: [Instagram] abc: something odd happened", False, False
     ).startswith("Instagram download failed: something odd happened")
+
+
+def test_cloud_ip_block_messages():
+    bot = friendly_error(
+        "ERROR: [youtube] abc: Sign in to confirm you're not a bot. Use --cookies-from-browser",
+        False,
+        False,
+        "youtube",
+    )
+    assert "blocking this server's IP" in bot and "YOUTUBE_COOKIES" in bot and "PROXY_URL" in bot
+    blocked = friendly_error(
+        "ERROR: [TikTok] 123: Your IP address is blocked from accessing this post",
+        False,
+        False,
+        "tiktok",
+    )
+    assert "blocks this server's IP range" in blocked
+    from app.extractor import classify_error
+
+    assert classify_error("Sign in to confirm you're not a bot")[0] == "bot_check"
+    assert classify_error("Your IP address is blocked from accessing this post")[0] == "ip_blocked"

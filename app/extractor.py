@@ -233,6 +233,8 @@ def build_ydl_opts(
     *,
     single_item: bool,
     max_duration: int = 0,
+    proxy: str | None = None,
+    extractor_args: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     opts: dict[str, Any] = {
         "format": BestRenditionSelector(),
@@ -245,6 +247,8 @@ def build_ydl_opts(
         "match_filter": _duration_filter(max_duration) if max_duration else None,
         # YouTube needs a JS runtime for full format access; use whichever is installed.
         "js_runtimes": {"deno": {}, "node": {}},
+        "proxy": proxy,
+        "extractor_args": extractor_args or {},
         "ignoreerrors": True,
         "quiet": True,
         "no_warnings": False,
@@ -310,6 +314,14 @@ def classify_error(message: str) -> tuple[str, str]:
     text = re.sub(r"^ERROR:\s*", "", message.strip())
     text = re.sub(r"^\[[^\]]+\]\s*(?:[\w-]+:\s*)?", "", text)
     lower = text.lower()
+    if "not a bot" in lower or "sign in to confirm" in lower:
+        return "bot_check", text
+    if (
+        "ip address is blocked" in lower
+        or "ip is blocked" in lower
+        or "blocked from accessing" in lower
+    ):
+        return "ip_blocked", text
     if "log in" in lower or "login" in lower or "cookies" in lower or "checkpoint" in lower:
         return "login", text
     if ("rate" in lower and "limit" in lower) or "429" in lower or "too many requests" in lower:
@@ -354,6 +366,18 @@ def friendly_error(
         return (
             f"{hint} can only be fetched while logged in. Paste a {name} `{info.login_cookie}` "
             f"cookie under Advanced, or configure {platform.upper()}_COOKIES on the server."
+        )
+    if kind == "bot_check":
+        return (
+            f"{name} is blocking this server's IP address (\"confirm you're not a bot\" — it "
+            "treats cloud/datacenter IPs as bots). Options: run the app on your own computer, "
+            f"configure {platform.upper()}_COOKIES from a throwaway account, or set PROXY_URL to "
+            "a residential proxy."
+        )
+    if kind == "ip_blocked":
+        return (
+            f"{name} blocks this server's IP range outright. Run the app on your own computer or "
+            "set PROXY_URL to a residential proxy — cookies don't help here."
         )
     if kind == "rate_limit":
         return f"{name} is rate-limiting this server. Wait a few minutes and try again."
@@ -477,21 +501,37 @@ def download_with_ytdlp(
             on_progress(min(0.99, index / max(count, 1)), "Merging audio and video")
 
     single_item = target.kind == "story" or target.platform != "instagram"
-    opts = build_ydl_opts(
-        job_dir,
-        settings,
-        cookie_source,
-        logger,
-        hook,
-        single_item=single_item,
-        max_duration=settings.max_source_duration_seconds,
-    )
 
-    try:
+    def run(extractor_args: dict[str, Any] | None = None):
+        opts = build_ydl_opts(
+            job_dir,
+            settings,
+            cookie_source,
+            logger,
+            hook,
+            single_item=single_item,
+            max_duration=settings.max_source_duration_seconds,
+            proxy=settings.proxy_for(target.platform),
+            extractor_args=extractor_args,
+        )
         with yt_dlp.YoutubeDL(opts) as ydl:
             opts["format"].bind(ydl)
             inject_cookies(ydl.cookiejar, cookie_source)
-            info = ydl.extract_info(url, download=True)
+            return ydl.extract_info(url, download=True)
+
+    try:
+        try:
+            info = run()
+        except (DownloadError, ExtractorError, yt_dlp.utils.YoutubeDLError) as exc:
+            kind, _ = classify_error(str(exc))
+            if target.platform != "youtube" or kind != "bot_check" or cookie_source.authenticated:
+                raise
+            # Datacenter IPs trip YouTube's bot check on the web client; the TV client often
+            # doesn't. Free second attempt before giving up.
+            log.info("youtube bot check on web client; retrying with tv client")
+            if on_progress:
+                on_progress(0.0, "YouTube bot check — retrying with the TV client")
+            info = run({"youtube": {"player_client": ["tv", "default"]}})
     except DownloadCancelled as exc:
         raise JobCancelled() from exc
     except (DownloadError, ExtractorError, yt_dlp.utils.YoutubeDLError) as exc:

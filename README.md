@@ -65,8 +65,8 @@ What this app does instead:
 | Platform | Native ceiling | Anonymous access | Notes |
 |---|---|---|---|
 | Instagram | 1080p, usually 30 fps | mostly login-walled | see [Logins](#logins-stories-private-accounts--and-most-reels) |
-| YouTube | up to 4K/8K | yes (datacenter IPs may hit "confirm you're not a bot") | needs a JS runtime (Node ≥ 22 or Deno) for all formats; clips longer than `MAX_SOURCE_DURATION_SECONDS` are refused |
-| TikTok | 1080p, 30 fps (some 60) | yes | blocked in some countries (e.g. India) — the server's network matters, not yours |
+| YouTube | up to 4K/8K | yes from home/office IPs; **cloud IPs get "confirm you're not a bot"** (the app retries with the TV client, then needs `YOUTUBE_COOKIES` or `PROXY_URL`) | needs a JS runtime (Node ≥ 22 or Deno) for all formats; clips longer than `MAX_SOURCE_DURATION_SECONDS` are refused |
+| TikTok | 1080p, 30 fps (some 60) | yes from home IPs; **cloud IP ranges are blocked outright** (`PROXY_URL` only) | also geo-blocked in some countries (e.g. India) — the server's network matters, not yours |
 | DeviantArt | original image / 1080p film | yes for public deviations | mature content needs an `auth` cookie; images are upscaled (Lanczos + CAS) in Enhance mode |
 
 ## Quick start
@@ -234,6 +234,7 @@ commented list. The important ones:
 | `FFMPEG_INTERP_QUALITY` | `high` | `fast` is ~2× quicker with slightly more ghosting |
 | `INSTAGRAM_COOKIES`, `YOUTUBE_COOKIES`, `TIKTOK_COOKIES`, `DEVIANTART_COOKIES` | — | `Cookie:` header strings configured on the server (`IG_SESSIONID`/`IG_COOKIES` still work) |
 | `COOKIES_FILE` / `COOKIES_FROM_BROWSER` | — | shared cookies.txt, or a local browser to read from |
+| `PROXY_URL`, `<PLATFORM>_PROXY` | — | outbound proxy for yt-dlp (residential proxies get around YouTube/TikTok cloud-IP blocks) |
 | `MAX_SOURCE_DURATION_SECONDS` | `1800` | refuse to *download* longer videos (YouTube) |
 | `AUTO_BROWSER_COOKIES` | `local` | reuse a local browser's Instagram login for same-machine requests (`always`, `off`) |
 | `BROWSER_COOKIE_ORDER` | `safari,chrome,…` | browsers/profiles to check, yt-dlp `BROWSER[:PROFILE]` syntax |

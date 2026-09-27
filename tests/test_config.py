@@ -38,3 +38,15 @@ def test_settings_from_env_reads_dotenv(tmp_path, monkeypatch):
 
 def test_missing_dotenv_is_fine(tmp_path):
     assert load_dotenv(tmp_path / "nope.env") == 0
+
+
+def test_proxy_settings(monkeypatch):
+    monkeypatch.setenv("DOTENV_PATH", "/nonexistent")
+    monkeypatch.setenv("PROXY_URL", "socks5://127.0.0.1:1080")
+    monkeypatch.setenv("YOUTUBE_PROXY", "http://proxy.example:8080")
+    settings = Settings.from_env()
+    assert settings.proxy_for("youtube") == "http://proxy.example:8080"
+    assert settings.proxy_for("tiktok") == "socks5://127.0.0.1:1080"
+    monkeypatch.delenv("PROXY_URL")
+    monkeypatch.delenv("YOUTUBE_PROXY")
+    assert Settings.from_env().proxy_for("tiktok") is None
