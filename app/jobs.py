@@ -185,11 +185,16 @@ def safe_filename(value: str, fallback: str = "instagram") -> str:
 
 
 class JobManager:
+    # After Instagram refuses an anonymous request, skip straight to the browser login for a while
+    # instead of burning a round trip (and an anonymous hit against the IP) on every job.
+    ANONYMOUS_BACKOFF_SECONDS = 15 * 60
+
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self.jobs: dict[str, Job] = {}
         self._semaphore = asyncio.Semaphore(settings.max_concurrent_jobs)
         self._sweeper: asyncio.Task | None = None
+        self._anonymous_blocked_until = 0.0
 
     # ------------------------------------------------------------------ lifecycle
 
@@ -337,8 +342,9 @@ class JobManager:
         job.options.cookies = None
         browser_allowed = self._browser_login_allowed(job)
 
-        if cookie_source.kind == "none" and browser_allowed and job.target.requires_login:
-            # Stories never work anonymously: skip straight to the browser session.
+        skip_anonymous = job.target.requires_login or time.time() < self._anonymous_blocked_until
+        if cookie_source.kind == "none" and browser_allowed and skip_anonymous:
+            # Stories never work anonymously, and a recent refusal means reels won't either.
             job.set_progress(0.0, "Looking for your browser's Instagram login…")
             browser_source, _ = await self._browser_login(job)
             cookie_source = browser_source or cookie_source
@@ -377,6 +383,7 @@ class JobManager:
                 job.cancel,
                 report_download,
             )
+            self._anonymous_blocked_until = time.time() + self.ANONYMOUS_BACKOFF_SECONDS
             return result, browser_source
 
     async def _execute(self, job: Job) -> None:

@@ -141,3 +141,33 @@ def test_always_mode_applies_to_remote_clients(settings, fake_download, monkeypa
     )
     assert job.status.value == "done", job.error
     assert job.auth == "your Chrome login"
+
+
+def test_anonymous_attempts_are_skipped_after_a_refusal(settings, fake_download, monkeypatch):
+    monkeypatch.setattr(
+        jobs_module,
+        "discover_browser_session",
+        lambda _s: found(BrowserSession("chrome", {"sessionid": "abc"})),
+    )
+
+    async def scenario():
+        manager = JobManager(settings)
+        await manager.start()
+        try:
+            first = manager.create(
+                REEL, JobOptions(mode="original"), "127.0.0.1", client_is_local=True
+            )
+            await asyncio.wait_for(first.task, timeout=60)
+            second = manager.create(
+                REEL, JobOptions(mode="original"), "127.0.0.1", client_is_local=True
+            )
+            await asyncio.wait_for(second.task, timeout=60)
+            return first, second
+        finally:
+            await manager.stop()
+
+    first, second = asyncio.run(scenario())
+    assert first.status.value == "done" and second.status.value == "done"
+    # first job: anonymous refusal then browser login; second job: browser login straight away
+    assert fake_download == ["none", "browser-auto", "browser-auto"]
+    assert second.auth == "your Chrome login"

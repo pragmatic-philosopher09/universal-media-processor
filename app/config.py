@@ -34,6 +34,31 @@ HARDWARE_ENCODERS = (
 KNOWN_ENCODERS = ("auto", *SOFTWARE_ENCODERS, *HARDWARE_ENCODERS)
 
 
+def load_dotenv(path: Path | None = None) -> int:
+    """Load KEY=VALUE lines from `.env` (or DOTENV_PATH) into os.environ without overriding
+    variables that are already set. Returns the number of variables loaded."""
+    path = path or Path(os.environ.get("DOTENV_PATH", ".env"))
+    if not path.is_file():
+        return 0
+    loaded = 0
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        if line.startswith("export "):
+            line = line[len("export ") :]
+        key, value = line.split("=", 1)
+        key, value = key.strip(), value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        else:
+            value = value.split(" #", 1)[0].rstrip()
+        if key and key not in os.environ:
+            os.environ[key] = value
+            loaded += 1
+    return loaded
+
+
 def _str(name: str, default: str | None = None) -> str | None:
     value = os.environ.get(name)
     if value is None or value.strip() == "":
@@ -124,6 +149,7 @@ class Settings:
 
     @classmethod
     def from_env(cls) -> Settings:
+        load_dotenv()
         allowed = _str("ALLOWED_DOMAINS")
         domains = (
             tuple(d.strip().lower() for d in allowed.split(",") if d.strip())
@@ -146,8 +172,10 @@ class Settings:
         if auto_browser not in {"local", "always", "off"}:
             raise ValueError("AUTO_BROWSER_COOKIES must be local, always or off")
         browser_order_raw = _str("BROWSER_COOKIE_ORDER")
+        # Profile names are case-sensitive paths on Linux; parse_browser_spec lowercases the
+        # browser part later.
         browser_order = (
-            tuple(b.strip().lower() for b in browser_order_raw.split(",") if b.strip())
+            tuple(b.strip() for b in browser_order_raw.split(",") if b.strip())
             if browser_order_raw
             else DEFAULT_BROWSER_ORDER
         )

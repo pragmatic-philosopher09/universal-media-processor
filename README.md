@@ -95,6 +95,10 @@ How the automatic browser login behaves:
   protection — only for a single-user box. `off` disables the feature.
 - When nothing is found, the error says exactly what was checked, e.g. *"Chrome: not logged in
   to Instagram; Safari: no permission to read its cookies"*.
+- After Instagram refuses an anonymous request once, the app goes straight to the browser login
+  for the next 15 minutes instead of retrying anonymously on every job.
+- Settings can live in a `.env` file next to the app (see `.env.example`); real environment
+  variables take precedence.
 
 The status card shows which login was used (*anonymous*, *your Chrome login*, …). Pasted and
 discovered cookies live in an in-memory cookie jar for that job only and are never written to
