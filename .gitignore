@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+
+# App data (downloaded / enhanced media)
+data/
+*.mp4
+*.mkv
+*.webm
+*.part
+*.ytdl
+
+# Local config
+.env
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/

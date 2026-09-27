@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Reel Downloader · best quality + 4K 60 fps enhancement</title>
+  <meta name="description" content="Download Instagram reels, posts and stories in the highest quality Instagram serves, then optionally enhance them to 4K 60 fps." />
+  <link rel="stylesheet" href="/style.css" />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23111827'/%3E%3Cpath d='M22 18l24 14-24 14z' fill='%23a78bfa'/%3E%3C/svg%3E" />
+</head>
+<body>
+  <main class="shell">
+    <header class="hero">
+      <div class="brand">
+        <span class="logo" aria-hidden="true">▶</span>
+        <h1>Reel Downloader</h1>
+      </div>
+      <p class="tagline">
+        Grabs the <strong>highest rendition Instagram actually serves</strong> for reels, posts and stories —
+        then optionally upscales to <strong>4K</strong> and interpolates to <strong>60 fps</strong> on this server.
+      </p>
+    </header>
+
+    <form id="job-form" class="card" autocomplete="off">
+      <label class="field">
+        <span class="field-label">Instagram link</span>
+        <div class="url-row">
+          <input id="url" name="url" type="url" inputmode="url" required
+                 placeholder="https://www.instagram.com/reel/…  ·  /p/…  ·  /stories/user/…" />
+          <button id="submit" type="submit" class="primary">Fetch</button>
+        </div>
+        <span id="url-hint" class="hint"></span>
+      </label>
+
+      <fieldset class="field">
+        <legend class="field-label">Output</legend>
+        <div class="segmented" role="radiogroup" aria-label="Output mode">
+          <label><input type="radio" name="mode" value="enhance" checked /><span>Enhance → 4K 60 fps</span></label>
+          <label><input type="radio" name="mode" value="original" /><span>Original (best available)</span></label>
+        </div>
+      </fieldset>
+
+      <div id="enhance-options" class="options-grid">
+        <label class="field compact">
+          <span class="field-label">Resolution</span>
+          <select name="resolution">
+            <option value="2160p" selected>4K (2160p short side)</option>
+            <option value="1440p">1440p</option>
+            <option value="original">Keep original</option>
+          </select>
+        </label>
+        <label class="field compact">
+          <span class="field-label">Frame rate</span>
+          <select name="fps">
+            <option value="60" selected>60 fps (interpolated)</option>
+            <option value="original">Keep original</option>
+          </select>
+        </label>
+        <label class="field compact">
+          <span class="field-label">Engine</span>
+          <select name="engine">
+            <option value="auto" selected>Auto (AI if installed)</option>
+            <option value="ffmpeg">ffmpeg (CPU, works everywhere)</option>
+            <option value="ai" id="engine-ai">AI · RIFE + Real-ESRGAN</option>
+          </select>
+          <span id="engine-hint" class="hint"></span>
+        </label>
+      </div>
+
+      <details class="advanced" id="advanced">
+        <summary>Advanced · Instagram login (needed for stories &amp; private accounts)</summary>
+        <div class="advanced-body">
+          <p id="auth-status" class="hint"></p>
+          <label class="field">
+            <span class="field-label">Instagram session cookie</span>
+            <textarea id="cookies" name="cookies" rows="3" spellcheck="false"
+              placeholder="Paste your `sessionid` value, the full Cookie header, or a cookies.txt export from instagram.com"></textarea>
+            <span class="hint">
+              In your browser: DevTools → Application/Storage → Cookies → instagram.com → copy <code>sessionid</code>.
+              Sent over HTTPS only to this server, kept in memory for the job, never written to disk.
+            </span>
+          </label>
+          <label class="check">
+            <input type="checkbox" id="remember-cookies" /> Remember on this device (stored in this browser only)
+          </label>
+        </div>
+      </details>
+    </form>
+
+    <section id="status" class="card status hidden" aria-live="polite">
+      <div class="status-head">
+        <div>
+          <p id="stage" class="stage">Queued</p>
+          <p id="substage" class="hint"></p>
+        </div>
+        <div class="status-actions">
+          <span id="elapsed" class="elapsed">0s</span>
+          <button id="cancel" type="button" class="ghost">Cancel</button>
+        </div>
+      </div>
+      <div class="bar"><div id="bar-fill" class="bar-fill" style="width:0%"></div></div>
+      <div id="chips" class="chips"></div>
+      <p id="error" class="error hidden"></p>
+      <ul id="warnings" class="warnings hidden"></ul>
+    </section>
+
+    <section id="results" class="results hidden"></section>
+
+    <footer class="foot">
+      <details class="reality">
+        <summary>Why is the original “only” 1080p?</summary>
+        <p>
+          Instagram re-encodes every upload and never delivers 4K: its CDN tops out at
+          <strong>1080 × 1920, usually 30 fps</strong>. Every downloader that reports 4K is upscaling.
+          This app is honest about it — it fetches the best rendition that exists, and the
+          <em>Enhance</em> mode computes the 4K 60 fps version here using motion-compensated frame
+          interpolation and Lanczos/AI upscaling with light contrast-adaptive sharpening, so the result
+          looks natural rather than “oil-painted”.
+        </p>
+      </details>
+      <p id="caps" class="caps"></p>
+      <p class="legal">Only download content you own or have permission to use. This tool is for personal use and is not affiliated with Instagram.</p>
+    </footer>
+  </main>
+
+  <template id="result-template">
+    <article class="result card">
+      <div class="preview">
+        <video controls muted playsinline preload="metadata"></video>
+      </div>
+      <div class="result-body">
+        <p class="result-kind"></p>
+        <h3 class="result-name"></h3>
+        <p class="result-meta"></p>
+        <a class="primary download" download>Download</a>
+      </div>
+    </article>
+  </template>
+
+  <script src="/app.js" defer></script>
+</body>
+</html>

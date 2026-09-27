@@ -1,0 +1,22 @@
+services:
+  reel-downloader:
+    build: .
+    image: reel-downloader:latest
+    ports:
+      - "8000:8000"
+    environment:
+      JOB_TTL_MINUTES: "60"
+      MAX_CONCURRENT_JOBS: "1"
+      MAX_DURATION_SECONDS: "600"
+      VIDEO_ENCODER: "auto"
+      # Needed for stories / private accounts. Prefer a throwaway Instagram account.
+      # IG_SESSIONID: "${IG_SESSIONID}"
+    volumes:
+      - reel-data:/data
+    restart: unless-stopped
+    # 4K60 interpolation is CPU heavy; give the container real cores.
+    cpus: "4"
+    mem_limit: 4g
+
+volumes:
+  reel-data:
