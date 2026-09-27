@@ -87,7 +87,7 @@ def test_capabilities(client):
 def test_frontend_is_served(client):
     response = client.get("/")
     assert response.status_code == 200
-    assert "Reel Downloader" in response.text
+    assert "Media Downloader" in response.text
     assert client.get("/app.js").status_code == 200
     assert client.get("/style.css").status_code == 200
 
@@ -211,3 +211,85 @@ def test_per_ip_job_limit(client):
     for response in (first, second):
         client.delete(f"/api/jobs/{response.json()['id']}")
         wait_for(client, response.json()["id"])
+
+
+@pytest.fixture
+def tiny_image(tmp_path_factory, settings):
+    import subprocess
+
+    path = tmp_path_factory.mktemp("img") / "tiny.png"
+    subprocess.run(
+        [
+            settings.ffmpeg_bin,
+            "-y",
+            "-loglevel",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=64x48:rate=1",
+            "-frames:v",
+            "1",
+            str(path),
+        ],
+        check=True,
+    )
+    return path
+
+
+def test_image_download_and_upscale(client, monkeypatch, tiny_image, settings):
+    def download(target, job_dir: Path, settings_, cookie_source, cancel, on_progress=None):
+        path = job_dir / "src-1240121428.png"
+        shutil.copyfile(tiny_image, path)
+        item = DownloadedItem(
+            path,
+            "1240121428",
+            "Art",
+            "artbySarf",
+            "artbySarf",
+            64,
+            48,
+            None,
+            None,
+            None,
+            target.url,
+            is_image=True,
+        )
+        return ExtractResult(items=[item], title="Art", uploader="artbySarf")
+
+    monkeypatch.setattr(jobs_module, "download", download)
+    response = client.post(
+        "/api/jobs",
+        json={
+            "url": "https://www.deviantart.com/artbysarf/art/I-Love-Whom-I-Love-1240121428",
+            "mode": "enhance",
+            "resolution": "1440p",
+            "fps": "60",
+        },
+    )
+    assert response.status_code == 202, response.text
+    job = wait_for(client, response.json()["id"])
+    assert job["status"] == "done", job
+    assert job["platform"] == "deviantart" and job["platform_name"] == "DeviantArt"
+    assert job["sources"][0]["is_image"] is True
+    assert job["plan"]["interpolate"] is False and job["plan"]["label"] == "1440p"
+    enhanced, original = job["outputs"]
+    assert enhanced["kind"] == "enhanced" and enhanced["is_image"] is True
+    assert enhanced["media_type"] == "image/png" and enhanced["download_name"].endswith(
+        "_1440p.png"
+    )
+    assert (enhanced["width"], enhanced["height"]) == (1920, 1440)
+    assert original["download_name"] == "artbySarf_1240121428.png"
+    assert client.get(enhanced["url"]).headers["content-type"] == "image/png"
+
+
+def test_youtube_job_is_accepted(client, fake_download):
+    response = client.post(
+        "/api/jobs", json={"url": "https://youtu.be/jNQXAC9IVRw", "mode": "original"}
+    )
+    assert response.status_code == 202
+    job = wait_for(client, response.json()["id"])
+    assert (
+        job["platform"] == "youtube" and job["url"] == "https://www.youtube.com/watch?v=jNQXAC9IVRw"
+    )
+    assert job["status"] == "done"

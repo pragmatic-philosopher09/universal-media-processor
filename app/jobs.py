@@ -7,20 +7,33 @@ import contextlib
 import logging
 import re
 import shutil
+import tempfile
 import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from pathlib import Path
 
 from .config import Settings
 from .cookies import CookieError, CookieSource, discover_browser_session, resolve_cookie_source
 from .enhance_ai import AIEngineError, enhance_with_ncnn, enhance_with_video2x, select_ai_engine
-from .enhance_ffmpeg import enhance_with_ffmpeg
+from .enhance_ffmpeg import enhance_image, enhance_with_ffmpeg
 from .extractor import DownloadedItem, ExtractError, download
 from .media import CancelToken, FFmpegError, JobCancelled, VideoInfo, choose_encoder, ffprobe
 from .plan import FPS_PRESETS, RESOLUTION_PRESETS, EnhancePlan, PlanError, make_plan
-from .urls import InstagramURL, InvalidURL, normalize_instagram_url
+from .urls import InvalidURL, MediaURL, normalize_url
+
+MEDIA_TYPES = {
+    "mp4": "video/mp4",
+    "mkv": "video/x-matroska",
+    "webm": "video/webm",
+    "mov": "video/quicktime",
+    "png": "image/png",
+    "jpg": "image/jpeg",
+    "jpeg": "image/jpeg",
+    "gif": "image/gif",
+    "webp": "image/webp",
+}
 
 log = logging.getLogger(__name__)
 
@@ -88,12 +101,18 @@ class OutputFile:
     info: VideoInfo
     engine: str | None = None
 
+    @property
+    def media_type(self) -> str:
+        return MEDIA_TYPES.get(self.path.suffix.lstrip(".").lower(), "application/octet-stream")
+
     def to_dict(self, job_id: str) -> dict:
         return {
             "index": self.index,
             "kind": self.kind,
             "media_id": self.media_id,
             "download_name": self.download_name,
+            "media_type": self.media_type,
+            "is_image": self.info.is_image,
             "engine": self.engine,
             "size": self.path.stat().st_size if self.path.exists() else None,
             "width": self.info.width,
@@ -109,7 +128,7 @@ class OutputFile:
 @dataclass
 class Job:
     id: str
-    target: InstagramURL
+    target: MediaURL
     options: JobOptions
     client_ip: str
     dir: Path
@@ -160,6 +179,8 @@ class Job:
         return {
             "id": self.id,
             "url": self.target.url,
+            "platform": self.target.platform,
+            "platform_name": self.target.platform_info.name,
             "kind": self.target.kind,
             "options": self.options.to_dict(),
             "status": self.status.value,
@@ -194,12 +215,19 @@ class JobManager:
         self.jobs: dict[str, Job] = {}
         self._semaphore = asyncio.Semaphore(settings.max_concurrent_jobs)
         self._sweeper: asyncio.Task | None = None
-        self._anonymous_blocked_until = 0.0
+        self._anonymous_blocked_until: dict[str, float] = {}
 
     # ------------------------------------------------------------------ lifecycle
 
     async def start(self) -> None:
-        self.settings.jobs_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            self.settings.jobs_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            # Read-only or missing DATA_DIR (common on PaaS containers): fall back to a temp dir.
+            fallback = Path(tempfile.gettempdir()) / "media-downloader"
+            log.warning("DATA_DIR %s unusable (%s); using %s", self.settings.data_dir, exc, fallback)
+            self.settings = replace(self.settings, data_dir=fallback)
+            self.settings.jobs_dir.mkdir(parents=True, exist_ok=True)
         for stale in self.settings.jobs_dir.iterdir():
             if stale.is_dir() and stale.name not in self.jobs:
                 shutil.rmtree(stale, ignore_errors=True)
@@ -253,9 +281,9 @@ class JobManager:
         self, url: str, options: JobOptions, client_ip: str, *, client_is_local: bool = False
     ) -> Job:
         options.validate()
-        target = normalize_instagram_url(url, self.settings.allowed_domains)
+        target = normalize_url(url, self.settings.allowed_domains)
         # Validate pasted cookies now so the user gets immediate feedback.
-        resolve_cookie_source(self.settings, options.cookies)
+        resolve_cookie_source(self.settings, options.cookies, target.platform_info)
 
         active = [
             job
@@ -330,7 +358,9 @@ class JobManager:
         return mode == "always" or (mode == "local" and job.client_is_local)
 
     async def _browser_login(self, job: Job) -> tuple[CookieSource | None, str]:
-        result = await asyncio.to_thread(discover_browser_session, self.settings)
+        result = await asyncio.to_thread(
+            discover_browser_session, self.settings, job.target.platform_info
+        )
         source = result.session.as_source() if result.session else None
         return source, result.summary()
 
@@ -338,14 +368,16 @@ class JobManager:
         """Download with the configured credentials, falling back to the operator's own browser
         login (same-machine requests only) when Instagram insists on a login."""
         settings = self.settings
-        cookie_source = resolve_cookie_source(settings, job.options.cookies)
+        platform = job.target.platform_info
+        cookie_source = resolve_cookie_source(settings, job.options.cookies, platform)
         job.options.cookies = None
         browser_allowed = self._browser_login_allowed(job)
 
-        skip_anonymous = job.target.requires_login or time.time() < self._anonymous_blocked_until
+        blocked_until = self._anonymous_blocked_until.get(platform.id, 0.0)
+        skip_anonymous = job.target.requires_login or time.time() < blocked_until
         if cookie_source.kind == "none" and browser_allowed and skip_anonymous:
             # Stories never work anonymously, and a recent refusal means reels won't either.
-            job.set_progress(0.0, "Looking for your browser's Instagram login…")
+            job.set_progress(0.0, f"Looking for your browser's {platform.name} login…")
             browser_source, _ = await self._browser_login(job)
             cookie_source = browser_source or cookie_source
 
@@ -363,14 +395,15 @@ class JobManager:
         except ExtractError as exc:
             if not (exc.login_required and cookie_source.kind == "none" and browser_allowed):
                 raise
-            job.set_progress(0.0, "Instagram wants a login — checking your browsers…")
+            job.set_progress(0.0, f"{platform.name} wants a login — checking your browsers…")
             browser_source, summary = await self._browser_login(job)
             if browser_source is None:
+                site = platform.cookie_domain.lstrip(".")
                 raise ExtractError(
-                    "Instagram only shows this to logged-in users, and no Instagram login was "
-                    f"found in your browsers ({summary}). Log in to instagram.com in one of them "
-                    "and try again — the app picks the login up automatically — or paste a "
-                    "sessionid under Advanced.",
+                    f"{platform.name} only shows this to logged-in users, and no {platform.name} "
+                    f"login was found in your browsers ({summary}). Log in to {site} in one of "
+                    "them and try again — the app picks the login up automatically — or paste a "
+                    f"`{platform.login_cookie}` cookie under Advanced.",
                     "login",
                 ) from exc
             job.set_progress(0.0, f"Retrying with {browser_source.describe()}…")
@@ -383,12 +416,14 @@ class JobManager:
                 job.cancel,
                 report_download,
             )
-            self._anonymous_blocked_until = time.time() + self.ANONYMOUS_BACKOFF_SECONDS
+            self._anonymous_blocked_until[platform.id] = (
+                time.time() + self.ANONYMOUS_BACKOFF_SECONDS
+            )
             return result, browser_source
 
     async def _execute(self, job: Job) -> None:
         settings = self.settings
-        job.set_stage(JobStatus.DOWNLOADING, "Contacting Instagram…", 0.0)
+        job.set_stage(JobStatus.DOWNLOADING, f"Contacting {job.target.platform_info.name}…", 0.0)
         result, cookie_source = await self._fetch(job)
         job.auth = cookie_source.describe()
         job.cancel.check()
@@ -425,7 +460,7 @@ class JobManager:
                 OutputFile(
                     index=len(outputs),
                     path=item.path,
-                    download_name=f"{base_name}.mp4",
+                    download_name=f"{base_name}.{item.ext or 'mp4'}",
                     kind="original",
                     media_id=item.media_id,
                     info=info,
@@ -447,11 +482,33 @@ class JobManager:
         plan = make_plan(info, job.options.resolution, job.options.fps)
         job.plan = plan.to_dict()
         if plan.is_noop:
-            job.warnings.append(
-                f"{item.media_id}: source is already {info.width}x{info.height} @ {info.fps:.0f} fps; "
-                "nothing to enhance."
+            what = (
+                f"{info.width}x{info.height}"
+                if info.is_image
+                else f"{info.width}x{info.height} @ {info.fps:.0f} fps"
             )
+            job.warnings.append(f"{item.media_id}: source is already {what}; nothing to enhance.")
             return None
+        if info.is_image:
+            job.set_stage(
+                JobStatus.ENHANCING,
+                f"Upscaling image to {plan.target_width}x{plan.target_height}",
+                0.0,
+            )
+            dst = job.dir / f"out-{safe_filename(item.media_id)}-{plan.label}.png"
+            dst.unlink(missing_ok=True)
+            await enhance_image(plan, item.path, dst, settings=settings, cancel=job.cancel)
+            job.cancel.check()
+            out_info = await ffprobe(dst, settings)
+            return OutputFile(
+                index=0,
+                path=dst,
+                download_name=f"{base_name}_{plan.label}.png",
+                kind="enhanced",
+                media_id=item.media_id,
+                info=out_info,
+                engine="ffmpeg/lanczos+cas",
+            )
         if settings.max_duration_seconds and info.duration > settings.max_duration_seconds:
             job.warnings.append(
                 f"{item.media_id}: {info.duration:.0f}s exceeds the {settings.max_duration_seconds}s "

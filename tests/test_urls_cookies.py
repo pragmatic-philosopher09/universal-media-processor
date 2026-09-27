@@ -13,7 +13,7 @@ from app.cookies import (
     parse_cookie_text,
     resolve_cookie_source,
 )
-from app.urls import InvalidURL, normalize_instagram_url
+from app.urls import InvalidURL, normalize_instagram_url, normalize_url
 
 # ---------------------------------------------------------------------------- URLs
 
@@ -103,9 +103,11 @@ def test_rejects_non_instagram_urls(raw):
         normalize_instagram_url(raw, DEFAULT_ALLOWED_DOMAINS)
 
 
-def test_custom_allow_list():
-    result = normalize_instagram_url("https://mirror.example/reel/abc/", ("mirror.example",))
-    assert result.url == "https://mirror.example/reel/abc/"
+def test_allow_list_can_restrict_platforms():
+    with pytest.raises(InvalidURL):
+        normalize_url("https://www.youtube.com/watch?v=jNQXAC9IVRw", ("instagram.com",))
+    result = normalize_url("https://www.youtube.com/watch?v=jNQXAC9IVRw", ("youtube.com",))
+    assert result.platform == "youtube"
 
 
 # ---------------------------------------------------------------------------- cookies
@@ -155,14 +157,14 @@ def test_parse_browser_spec():
 
 
 def test_resolve_priority(settings):
-    env = replace(settings, ig_sessionid="env-session")
+    env = replace(settings, platform_cookies={"instagram": "env-session"})
     assert resolve_cookie_source(env, None) == CookieSource(
         kind="env", cookies={"sessionid": "env-session"}
     )
     request = resolve_cookie_source(env, "user-session")
     assert request.kind == "request" and request.cookies == {"sessionid": "user-session"}
     assert resolve_cookie_source(settings, None).kind == "none"
-    browser = replace(settings, ig_cookies_from_browser="safari")
+    browser = replace(settings, cookies_from_browser="safari")
     assert resolve_cookie_source(browser, None).browser_spec == ("safari",)
 
 
@@ -274,7 +276,7 @@ def test_discover_browser_session_reports_logged_out_profiles(settings, monkeypa
     result = cookies_module.discover_browser_session(plain, now=0.0)
     assert result.session is None
     assert result.summary() == (
-        "Chrome: not logged in to Instagram; Brave: no Instagram cookies; Firefox: not installed"
+        "Chrome: not logged in; Brave: no cookies for this site; Firefox: not installed"
     )
 
     targeted = replace(settings, browser_cookie_order=("chrome:Profile 6", "chrome"))

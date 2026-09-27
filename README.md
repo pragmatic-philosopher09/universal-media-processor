@@ -1,9 +1,21 @@
-# Reel Downloader — best-quality Instagram downloads + 4K 60 fps enhancement
+---
+title: Media Downloader 4K60
+emoji: 🎬
+colorFrom: purple
+colorTo: pink
+sdk: docker
+app_port: 8000
+pinned: false
+license: mit
+short_description: Best-quality Instagram/YouTube/TikTok/DeviantArt downloads + 4K60
+---
 
-A free, self-hostable web app that downloads Instagram **reels, posts and stories** in the
-highest quality Instagram actually serves, and optionally **enhances them to 4K (2160p) at
-60 fps** with motion-compensated frame interpolation and high-quality upscaling. Paste a link
-anywhere on the page and it starts.
+# Media Downloader — best-quality downloads + 4K 60 fps enhancement
+
+A free, self-hostable web app that downloads **Instagram** reels/posts/stories, **YouTube**
+videos and Shorts, **TikTok** videos and **DeviantArt** art and films in the highest quality each
+platform actually serves, and optionally **enhances them to 4K (2160p) at 60 fps** (videos) or
+upscales them to 4K (images). Paste a link anywhere on the page and it starts.
 
 The default enhancement engine is **classical signal processing in ffmpeg — not AI**. An
 optional, *experimental and unverified* AI engine (RIFE + Real-ESRGAN neural networks) is wired
@@ -31,9 +43,12 @@ What this app does instead:
 
 ## Features
 
-- Paste-to-go: an Instagram link pasted anywhere on the page (even inside share-sheet text)
-  starts the job immediately
-- Reels, posts (incl. carousels), IGTV, stories, highlights and `/share/` links
+- Paste-to-go: a link pasted anywhere on the page (even inside share-sheet text) starts the job
+- **Instagram**: reels, posts (incl. carousels), IGTV, stories, highlights, `/share/` links
+- **YouTube**: videos, Shorts, `youtu.be` links (single videos only; playlists are ignored)
+- **TikTok**: videos incl. `vm.tiktok.com` short links
+- **DeviantArt**: original image files and the highest film rendition (custom extractor —
+  yt-dlp has none)
 - Best-rendition selection (yt-dlp with a custom format selector)
 - Enhancement presets: resolution *original / 1440p / 4K*, frame rate *original / 60*
 - Engines: **ffmpeg** (`minterpolate` + Lanczos + CAS) by default; **AI** (`rife-ncnn-vulkan` +
@@ -44,6 +59,15 @@ What this app does instead:
   users can still paste a cookie
 - Progress reporting, cancellation, per-IP limits, automatic file expiry
 - No database, no build step: FastAPI + vanilla JS
+
+## Platform notes
+
+| Platform | Native ceiling | Anonymous access | Notes |
+|---|---|---|---|
+| Instagram | 1080p, usually 30 fps | mostly login-walled | see [Logins](#logins-stories-private-accounts--and-most-reels) |
+| YouTube | up to 4K/8K | yes (datacenter IPs may hit "confirm you're not a bot") | needs a JS runtime (Node ≥ 22 or Deno) for all formats; clips longer than `MAX_SOURCE_DURATION_SECONDS` are refused |
+| TikTok | 1080p, 30 fps (some 60) | yes | blocked in some countries (e.g. India) — the server's network matters, not yours |
+| DeviantArt | original image / 1080p film | yes for public deviations | mature content needs an `auth` cookie; images are upscaled (Lanczos + CAS) in Enhance mode |
 
 ## Quick start
 
@@ -66,6 +90,31 @@ docker build -t reel-downloader . && docker run -p 8000:8000 -v reel-data:/data 
 ```
 
 Instagram changes often; if downloads start failing, rebuild the image / `pip install -U yt-dlp`.
+
+### Hugging Face Spaces (free, Docker)
+
+The repository doubles as a Space: the README front matter declares `sdk: docker` and
+`app_port: 8000`. Create a Docker Space and push this repo to it:
+
+```bash
+huggingface-cli login
+huggingface-cli repo create media-downloader --type space --space_sdk docker
+git remote add hf https://huggingface.co/spaces/<you>/media-downloader
+git push hf main
+```
+
+Recommended Space **variables** (Settings → Variables) for the free 2-vCPU tier:
+
+```
+AUTO_BROWSER_COOKIES=off   MAX_CONCURRENT_JOBS=1   MAX_DURATION_SECONDS=120
+X264_PRESET=veryfast       FFMPEG_INTERP_QUALITY=fast   JOB_TTL_MINUTES=30
+```
+
+and, as **secrets**, `INSTAGRAM_COOKIES` (a throwaway account's `sessionid=…; ds_user_id=…;
+csrftoken=…`) because Instagram login-walls datacenter IPs; optionally `YOUTUBE_COOKIES` if
+YouTube starts asking the server to prove it is not a bot. The Space has no browser, so the
+automatic browser login does not apply there. Files live on ephemeral disk and expire after
+`JOB_TTL_MINUTES`.
 
 ## Logins: stories, private accounts — and most reels
 
@@ -183,7 +232,9 @@ commented list. The important ones:
 | `X264_PRESET` / `X264_CRF` | `medium` / `18` | software-encoder quality |
 | `SHARPEN` | `0.3` | CAS strength after upscaling, `0` disables |
 | `FFMPEG_INTERP_QUALITY` | `high` | `fast` is ~2× quicker with slightly more ghosting |
-| `IG_SESSIONID` etc. | — | Instagram login configured on the server (see above) |
+| `INSTAGRAM_COOKIES`, `YOUTUBE_COOKIES`, `TIKTOK_COOKIES`, `DEVIANTART_COOKIES` | — | `Cookie:` header strings configured on the server (`IG_SESSIONID`/`IG_COOKIES` still work) |
+| `COOKIES_FILE` / `COOKIES_FROM_BROWSER` | — | shared cookies.txt, or a local browser to read from |
+| `MAX_SOURCE_DURATION_SECONDS` | `1800` | refuse to *download* longer videos (YouTube) |
 | `AUTO_BROWSER_COOKIES` | `local` | reuse a local browser's Instagram login for same-machine requests (`always`, `off`) |
 | `BROWSER_COOKIE_ORDER` | `safari,chrome,…` | browsers/profiles to check, yt-dlp `BROWSER[:PROFILE]` syntax |
 | `AI_ENGINE` | `auto` | `ncnn`, `video2x`, or `off` |
@@ -224,7 +275,8 @@ until someone runs them against the real binaries on real hardware.
 
 ## Limitations
 
-- Photo posts / photo stories are skipped (video only).
+- Instagram photo posts / photo stories are skipped (yt-dlp only yields videos there);
+  DeviantArt images are supported.
 - Instagram rate-limits and login-walls anonymous traffic, especially from cloud IPs; a login
   (browser session or pasted cookie) fixes most "empty media response" errors.
 - The automatic browser login needs a browser on the *server's* machine, so it only helps when

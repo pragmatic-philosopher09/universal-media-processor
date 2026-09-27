@@ -20,7 +20,7 @@ from .cookies import CookieError
 from .enhance_ai import ai_capabilities
 from .jobs import JobManager, JobNotFound, JobOptions, TooManyJobs
 from .media import choose_encoder, list_encoders
-from .urls import InvalidURL
+from .urls import PLATFORMS, InvalidURL
 
 log = logging.getLogger(__name__)
 
@@ -71,7 +71,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             await manager.stop()
 
     app = FastAPI(
-        title="Instagram Reel & Story Downloader",
+        title="Media Downloader (Instagram · YouTube · TikTok · DeviantArt)",
         version="1.0.0",
         docs_url="/api/docs",
         redoc_url=None,
@@ -102,6 +102,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 ),
             },
             "ai": ai_capabilities(settings),
+            "platforms": [
+                {
+                    "id": p.id,
+                    "name": p.name,
+                    "domains": list(p.domains),
+                    "max_native": p.max_native,
+                    "login_walled": p.login_walled,
+                    "login_configured": settings.login_configured(p.id),
+                }
+                for p in PLATFORMS.values()
+            ],
             "stories_auth_configured": settings.stories_auth_configured,
             "allow_user_cookies": settings.allow_user_cookies,
             "yt_dlp_version": yt_dlp.version.__version__,
@@ -168,7 +179,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         headers = {
             "Content-Disposition": f'{"inline" if inline else "attachment"}; filename="{output.download_name}"'
         }
-        return FileResponse(output.path, media_type="video/mp4", headers=headers)
+        return FileResponse(output.path, media_type=output.media_type, headers=headers)
 
     @app.exception_handler(Exception)
     async def unhandled(_: Request, exc: Exception) -> JSONResponse:  # pragma: no cover

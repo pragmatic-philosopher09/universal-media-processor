@@ -173,3 +173,34 @@ async def enhance_with_ffmpeg(
         duration=plan.source.duration or None,
         on_progress=on_progress,
     )
+
+
+def build_image_command(plan: EnhancePlan, src: Path, dst: Path, settings: Settings) -> list[str]:
+    """Upscale a still image (PNG output keeps it lossless)."""
+    filters = [scale_filter(plan.target_width, plan.target_height)]
+    sharpen = sharpen_filter(settings.sharpen)
+    if sharpen:
+        filters.append(sharpen)
+    return [
+        settings.ffmpeg_bin,
+        "-y",
+        "-hide_banner",
+        "-nostdin",
+        "-loglevel",
+        "error",
+        "-i",
+        str(src),
+        "-frames:v",
+        "1",
+        "-vf",
+        ",".join(filters),
+        "-update",
+        "1",
+        str(dst),
+    ]
+
+
+async def enhance_image(
+    plan: EnhancePlan, src: Path, dst: Path, *, settings: Settings, cancel: CancelToken
+) -> None:
+    await run_ffmpeg(build_image_command(plan, src, dst, settings), cancel=cancel)

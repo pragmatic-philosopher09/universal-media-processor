@@ -1,4 +1,4 @@
-"""yt-dlp wrapper that always fetches Instagram's highest-quality rendition.
+"""Download layer: yt-dlp for Instagram / YouTube / TikTok, a custom extractor for DeviantArt.
 
 Instagram exposes several renditions per video (progressive MP4s plus a DASH manifest). Many
 downloaders grab whichever appears first; we ask yt-dlp to rank every rendition by resolution,
@@ -22,10 +22,11 @@ from urllib.parse import parse_qs, urlsplit
 import yt_dlp
 from yt_dlp.utils import DownloadCancelled, DownloadError, ExtractorError, FormatSorter
 
+from . import deviantart
 from .config import Settings
 from .cookies import CookieSource, apply_cookie_source_to_opts, inject_cookies
 from .media import CancelToken, JobCancelled
-from .urls import InstagramURL
+from .urls import PLATFORMS, MediaURL, normalize_url
 
 log = logging.getLogger(__name__)
 
@@ -131,10 +132,15 @@ class DownloadedItem:
     duration: float | None
     format_id: str | None
     webpage_url: str | None
+    is_image: bool = False
+
+    @property
+    def ext(self) -> str:
+        return self.path.suffix.lstrip(".").lower()
 
     @property
     def display_name(self) -> str:
-        return self.channel or self.uploader or "instagram"
+        return self.channel or self.uploader or "media"
 
 
 @dataclass
@@ -174,8 +180,8 @@ class _CapturingLogger:
         self._record("error", msg)
 
 
-def resolve_share_url(url: str, timeout: float = 15) -> str:
-    """Follow Instagram `/share/...` redirects to the canonical reel/post URL."""
+def resolve_share_url(url: str, allowed_domains, timeout: float = 15) -> MediaURL:
+    """Follow short/share links (instagram.com/share/…, vm.tiktok.com/…, fav.me/…) to the media."""
     request = urllib.request.Request(url, method="HEAD", headers={"User-Agent": BROWSER_UA})
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
@@ -183,13 +189,39 @@ def resolve_share_url(url: str, timeout: float = 15) -> str:
     except urllib.error.HTTPError as exc:
         final = exc.geturl() or url
     except (urllib.error.URLError, TimeoutError) as exc:
-        raise ExtractError(f"Could not resolve the share link: {exc}") from exc
-    final = re.sub(r"[?#].*$", "", final)
-    if "/share/" in final or not re.search(r"/(?:p|reels?|tv)/[A-Za-z0-9_-]+", final):
+        raise ExtractError(f"Could not resolve the share link: {exc}", "network") from exc
+    final = re.sub(r"[?#].*$", "", final) if "youtube" not in final else final
+    try:
+        resolved = normalize_url(final, allowed_domains)
+    except ValueError as exc:
         raise ExtractError(
-            "Could not resolve the share link; open it in a browser and copy the reel URL."
+            "Could not resolve the share link; open it in a browser and copy the final URL.",
+            "unsupported",
+        ) from exc
+    if resolved.kind == "share":
+        raise ExtractError(
+            "Could not resolve the share link; open it in a browser and copy the final URL.",
+            "unsupported",
         )
-    return final
+    return resolved
+
+
+class TooLong(ExtractError):
+    pass
+
+
+def _duration_filter(limit: int):
+    def match_filter(info: dict[str, Any], *, incomplete: bool = False) -> str | None:
+        duration = info.get("duration")
+        if duration and limit and duration > limit:
+            raise TooLong(
+                f"This video is {duration / 60:.0f} min long; this server accepts up to "
+                f"{limit / 60:.0f} min.",
+                "too_long",
+            )
+        return None
+
+    return match_filter
 
 
 def build_ydl_opts(
@@ -200,6 +232,7 @@ def build_ydl_opts(
     progress_hook: Callable[[dict[str, Any]], None],
     *,
     single_item: bool,
+    max_duration: int = 0,
 ) -> dict[str, Any]:
     opts: dict[str, Any] = {
         "format": BestRenditionSelector(),
@@ -209,6 +242,9 @@ def build_ydl_opts(
         "restrictfilenames": True,
         "noplaylist": single_item,
         "playlistend": 50,
+        "match_filter": _duration_filter(max_duration) if max_duration else None,
+        # YouTube needs a JS runtime for full format access; use whichever is installed.
+        "js_runtimes": {"deno": {}, "node": {}},
         "ignoreerrors": True,
         "quiet": True,
         "no_warnings": False,
@@ -250,7 +286,11 @@ def _downloaded_path(entry: dict[str, Any]) -> Path | None:
 
 def _to_item(entry: dict[str, Any], path: Path) -> DownloadedItem:
     fps = entry.get("fps")
+    is_image = path.suffix.lower().lstrip(".") in deviantart.IMAGE_EXTENSIONS or (
+        entry.get("vcodec") == "none" and entry.get("acodec") == "none"
+    )
     return DownloadedItem(
+        is_image=is_image,
         path=path,
         media_id=str(entry.get("id") or path.stem.removeprefix("src-")),
         title=entry.get("title"),
@@ -297,54 +337,124 @@ def classify_error(message: str) -> tuple[str, str]:
     return "other", text
 
 
-def friendly_error(message: str, requires_login: bool, authenticated: bool) -> str:
+def friendly_error(
+    message: str, requires_login: bool, authenticated: bool, platform: str = "instagram"
+) -> str:
+    info = PLATFORMS.get(platform, PLATFORMS["instagram"])
+    name = info.name
+    site = info.cookie_domain.lstrip(".")
     kind, text = classify_error(message)
     if kind == "login":
         if authenticated:
             return (
-                "Instagram rejected the session cookie (expired, or the account was challenged). "
-                "Log in to instagram.com again and paste a fresh sessionid."
+                f"{name} rejected the session cookie (expired, or the account was challenged). "
+                f"Log in to {site} again and paste a fresh `{info.login_cookie}` cookie."
             )
         hint = "Stories" if requires_login else "This content"
         return (
-            f"{hint} can only be fetched while logged in. Paste an Instagram sessionid cookie "
-            "under Advanced, or configure IG_SESSIONID on the server."
+            f"{hint} can only be fetched while logged in. Paste a {name} `{info.login_cookie}` "
+            f"cookie under Advanced, or configure {platform.upper()}_COOKIES on the server."
         )
     if kind == "rate_limit":
-        return "Instagram is rate-limiting this server. Wait a few minutes and try again."
+        return f"{name} is rate-limiting this server. Wait a few minutes and try again."
     if kind == "private":
         return "This account is private. Use a session cookie for an account that follows it."
     if kind == "unavailable":
-        return "Instagram says this media is unavailable (deleted, private or a broken link)."
+        return f"{name} says this media is unavailable (deleted, private or a broken link)."
     if kind == "unsupported":
-        return "That Instagram URL type isn't supported yet."
+        return f"That {name} URL type isn't supported yet."
     if kind == "no_video":
-        return "No video was found at this link. Photo posts and photo stories aren't supported."
+        if platform == "instagram":
+            return (
+                "No video was found at this link. Photo posts and photo stories aren't supported."
+            )
+        return "No downloadable media was found at this link."
     if kind == "network":
-        return "Couldn't reach Instagram. Check the server's network connection and try again."
-    return f"Instagram download failed: {text[:300]}"
+        return f"Couldn't reach {name}. Check the server's network connection and try again."
+    return f"{name} download failed: {text[:300]}"
 
 
-def _extract_error(message: str, target: InstagramURL, cookie_source: CookieSource) -> ExtractError:
+def _extract_error(message: str, target: MediaURL, cookie_source: CookieSource) -> ExtractError:
     kind, _ = classify_error(message)
     return ExtractError(
-        friendly_error(message, target.requires_login, cookie_source.authenticated), kind
+        friendly_error(
+            message, target.requires_login, cookie_source.authenticated, target.platform
+        ),
+        kind,
     )
 
 
 def download(
-    target: InstagramURL,
+    target: MediaURL,
     job_dir: Path,
     settings: Settings,
     cookie_source: CookieSource,
     cancel: CancelToken,
     on_progress: ProgressHook | None = None,
 ) -> ExtractResult:
-    """Blocking download of every video at `target` into `job_dir` (run in a worker thread)."""
-    url = target.url
+    """Blocking download of every media item at `target` into `job_dir` (run in a worker thread)."""
     if target.kind == "share":
-        url = resolve_share_url(url)
+        target = resolve_share_url(target.url, settings.allowed_domains)
+    job_dir.mkdir(parents=True, exist_ok=True)
+    if target.platform == "deviantart":
+        return download_deviantart(target, job_dir, cookie_source, cancel, on_progress)
+    return download_with_ytdlp(target, job_dir, settings, cookie_source, cancel, on_progress)
 
+
+def download_deviantart(
+    target: MediaURL,
+    job_dir: Path,
+    cookie_source: CookieSource,
+    cancel: CancelToken,
+    on_progress: ProgressHook | None = None,
+) -> ExtractResult:
+    try:
+        if on_progress:
+            on_progress(0.0, "Reading the deviation page")
+        deviation = deviantart.fetch_deviation(target.url, cookie_source)
+        cancel.check()
+        path = job_dir / f"src-{deviation.deviation_id or 'deviation'}.{deviation.ext}"
+        label = f"Downloading {deviation.quality or 'original'}"
+        deviantart.download_file(
+            deviation.media_url,
+            path,
+            cookie_source,
+            cancel,
+            (lambda f: on_progress(f, label)) if on_progress else None,
+        )
+    except deviantart.DeviantArtError as exc:
+        raise ExtractError(
+            friendly_error(str(exc), False, cookie_source.authenticated, "deviantart")
+            if exc.kind in {"login", "rate_limit", "network", "unavailable"}
+            else str(exc),
+            exc.kind,
+        ) from exc
+    item = DownloadedItem(
+        path=path,
+        media_id=deviation.deviation_id or path.stem,
+        title=deviation.title,
+        uploader=deviation.author,
+        channel=deviation.author,
+        width=deviation.width,
+        height=deviation.height,
+        fps=None,
+        duration=deviation.duration,
+        format_id=deviation.quality,
+        webpage_url=deviation.page_url,
+        is_image=not deviation.is_video,
+    )
+    return ExtractResult(items=[item], title=deviation.title, uploader=deviation.author)
+
+
+def download_with_ytdlp(
+    target: MediaURL,
+    job_dir: Path,
+    settings: Settings,
+    cookie_source: CookieSource,
+    cancel: CancelToken,
+    on_progress: ProgressHook | None = None,
+) -> ExtractResult:
+    url = target.url
     logger = _CapturingLogger()
 
     def hook(data: dict[str, Any]) -> None:
@@ -366,10 +476,16 @@ def download(
         elif status == "finished":
             on_progress(min(0.99, index / max(count, 1)), "Merging audio and video")
 
+    single_item = target.kind == "story" or target.platform != "instagram"
     opts = build_ydl_opts(
-        job_dir, settings, cookie_source, logger, hook, single_item=target.kind == "story"
+        job_dir,
+        settings,
+        cookie_source,
+        logger,
+        hook,
+        single_item=single_item,
+        max_duration=settings.max_source_duration_seconds,
     )
-    job_dir.mkdir(parents=True, exist_ok=True)
 
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:

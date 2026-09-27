@@ -20,6 +20,7 @@ from .config import HARDWARE_ENCODERS, Settings
 log = logging.getLogger(__name__)
 
 ProgressCallback = Callable[[float], None]
+IMAGE_CODECS = {"png", "mjpeg", "webp", "gif", "bmp", "tiff", "jpegxl", "avif"}
 
 
 class JobCancelled(Exception):
@@ -85,6 +86,10 @@ class VideoInfo:
     video_duration: float | None = None
 
     @property
+    def is_image(self) -> bool:
+        return (self.vcodec or "") in IMAGE_CODECS and (self.nb_frames or 1) <= 1
+
+    @property
     def frames_duration(self) -> float:
         """Duration of the video stream itself (audio can run slightly longer)."""
         if self.nb_frames and self.fps:
@@ -103,6 +108,7 @@ class VideoInfo:
         data = asdict(self)
         data["fps"] = round(self.fps, 3)
         data["duration"] = round(self.duration, 3)
+        data["is_image"] = self.is_image
         return data
 
 
@@ -152,6 +158,8 @@ async def ffprobe(path: Path, settings: Settings) -> VideoInfo:
     nb_frames = _to_int(video.get("nb_frames"))
     if not nb_frames and duration and fps:
         nb_frames = int(round(duration * fps))
+    if (video.get("codec_name") or "") in IMAGE_CODECS and (nb_frames or 1) <= 1:
+        fps, duration, nb_frames = 0.0, 0.0, 1
     return VideoInfo(
         width=int(video.get("width") or 0),
         height=int(video.get("height") or 0),

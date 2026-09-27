@@ -7,10 +7,11 @@ See `.env.example` and the README for documentation of each variable.
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
-DEFAULT_ALLOWED_DOMAINS = ("instagram.com", "instagr.am", "ig.me")
+from .urls import DEFAULT_ALLOWED_DOMAINS, PLATFORMS
+
 DEFAULT_BROWSER_ORDER = (
     "safari",
     "chrome",
@@ -57,6 +58,23 @@ def load_dotenv(path: Path | None = None) -> int:
             os.environ[key] = value
             loaded += 1
     return loaded
+
+
+def _platform_cookies_from_env() -> dict[str, str]:
+    """INSTAGRAM_COOKIES / YOUTUBE_COOKIES / ... as `Cookie:` header strings.
+
+    Legacy aliases: IG_COOKIES (header string) and IG_SESSIONID (bare value)."""
+    cookies: dict[str, str] = {}
+    for platform in PLATFORMS:
+        value = _str(f"{platform.upper()}_COOKIES")
+        if value:
+            cookies[platform] = value
+    legacy = _str("IG_COOKIES") or (
+        f"sessionid={_str('IG_SESSIONID')}" if _str("IG_SESSIONID") else None
+    )
+    if legacy and "instagram" not in cookies:
+        cookies["instagram"] = legacy
+    return cookies
 
 
 def _str(name: str, default: str | None = None) -> str | None:
@@ -109,13 +127,14 @@ class Settings:
     max_concurrent_jobs: int = 2
     max_jobs_per_ip: int = 2
     max_duration_seconds: int = 600
+    max_source_duration_seconds: int = 1800
     allowed_domains: tuple[str, ...] = DEFAULT_ALLOWED_DOMAINS
 
-    # Instagram authentication (needed for stories / private content)
-    ig_sessionid: str | None = None
-    ig_cookies: str | None = None
-    ig_cookies_file: Path | None = None
-    ig_cookies_from_browser: str | None = None
+    # Logins. Per-platform `Cookie:` header strings (INSTAGRAM_COOKIES, YOUTUBE_COOKIES, ...),
+    # a shared Netscape cookies.txt, or a local browser to read cookies from.
+    platform_cookies: dict[str, str] = field(default_factory=dict)
+    cookies_file: Path | None = None
+    cookies_from_browser: str | None = None
     allow_user_cookies: bool = True
     # local = use the operator's own browser login for requests from this machine,
     # always = for every request (single-user deployments only), off = never
@@ -189,11 +208,11 @@ class Settings:
             max_concurrent_jobs=max(1, _int("MAX_CONCURRENT_JOBS", 2)),
             max_jobs_per_ip=max(1, _int("MAX_JOBS_PER_IP", 2)),
             max_duration_seconds=_int("MAX_DURATION_SECONDS", 600),
+            max_source_duration_seconds=_int("MAX_SOURCE_DURATION_SECONDS", 1800),
             allowed_domains=domains,
-            ig_sessionid=_str("IG_SESSIONID"),
-            ig_cookies=_str("IG_COOKIES"),
-            ig_cookies_file=_path("IG_COOKIES_FILE"),
-            ig_cookies_from_browser=_str("IG_COOKIES_FROM_BROWSER"),
+            platform_cookies=_platform_cookies_from_env(),
+            cookies_file=_path("COOKIES_FILE") or _path("IG_COOKIES_FILE"),
+            cookies_from_browser=_str("COOKIES_FROM_BROWSER") or _str("IG_COOKIES_FROM_BROWSER"),
             allow_user_cookies=_bool("ALLOW_USER_COOKIES", True),
             auto_browser_cookies=auto_browser,
             browser_cookie_order=browser_order,
@@ -226,13 +245,11 @@ class Settings:
     def jobs_dir(self) -> Path:
         return self.data_dir / "jobs"
 
+    def login_configured(self, platform: str) -> bool:
+        return bool(
+            self.platform_cookies.get(platform) or self.cookies_file or self.cookies_from_browser
+        )
+
     @property
     def stories_auth_configured(self) -> bool:
-        return any(
-            (
-                self.ig_sessionid,
-                self.ig_cookies,
-                self.ig_cookies_file,
-                self.ig_cookies_from_browser,
-            )
-        )
+        return self.login_configured("instagram")

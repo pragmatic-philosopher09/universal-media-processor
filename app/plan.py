@@ -98,6 +98,8 @@ class EnhancePlan:
     @property
     def label(self) -> str:
         short = min(self.target_width, self.target_height)
+        if self.source.is_image:
+            return f"{short}p"
         fps = int(round(self.target_fps))
         return f"{short}p{fps}"
 
@@ -126,6 +128,8 @@ def make_plan(source: VideoInfo, resolution: str = "2160p", fps: str = "60") -> 
     target_fps_pref = FPS_PRESETS[fps]
     ratio = Fraction(1)
     target_fps = source.fps
+    if source.is_image:
+        target_fps_pref = None
     if target_fps_pref is not None and source.fps > 0 and source.fps < target_fps_pref * 0.99:
         ratio = choose_fps_ratio(source.fps, target_fps_pref)
         target_fps = source.fps * float(ratio)

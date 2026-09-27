@@ -3,8 +3,8 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Reel Downloader · best quality + 4K 60 fps enhancement</title>
-  <meta name="description" content="Download Instagram reels, posts and stories in the highest quality Instagram serves, then optionally enhance them to 4K 60 fps." />
+  <title>Media Downloader · Instagram, YouTube, TikTok, DeviantArt · best quality + 4K 60 fps enhancement</title>
+  <meta name="description" content="Download Instagram reels & stories, YouTube videos, TikToks and DeviantArt art in the best quality served, then optionally enhance them to 4K 60 fps." />
   <link rel="stylesheet" href="/style.css" />
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23111827'/%3E%3Cpath d='M22 18l24 14-24 14z' fill='%23a78bfa'/%3E%3C/svg%3E" />
 </head>
@@ -13,11 +13,13 @@
     <header class="hero">
       <div class="brand">
         <span class="logo" aria-hidden="true">▶</span>
-        <h1>Reel Downloader</h1>
+        <h1>Media Downloader</h1>
       </div>
       <p class="tagline">
-        Grabs the <strong>highest rendition Instagram actually serves</strong> for reels, posts and stories —
-        then optionally upscales to <strong>4K</strong> and interpolates to <strong>60 fps</strong> on this server.
+        <strong>Instagram</strong> reels, posts &amp; stories · <strong>YouTube</strong> videos &amp; Shorts ·
+        <strong>TikTok</strong> · <strong>DeviantArt</strong> art &amp; films — always the
+        <strong>highest rendition the platform actually serves</strong>, optionally upscaled to
+        <strong>4K</strong> and interpolated to <strong>60 fps</strong> on this server.
       </p>
     </header>
 
@@ -26,7 +28,7 @@
         <span class="field-label">Instagram link</span>
         <div class="url-row">
           <input id="url" name="url" type="text" inputmode="url" autocapitalize="off" required
-                 placeholder="Paste a reel, post or story link — it starts by itself" />
+                 placeholder="Paste an Instagram, YouTube, TikTok or DeviantArt link — it starts by itself" />
           <button id="submit" type="submit" class="primary">Fetch</button>
         </div>
         <span id="url-hint" class="hint">Tip: paste anywhere on this page (⌘V / Ctrl+V) and the download starts immediately.</span>
@@ -72,12 +74,12 @@
         <div class="advanced-body">
           <p id="auth-status" class="hint"></p>
           <label class="field">
-            <span class="field-label">Instagram session cookie</span>
+            <span class="field-label" id="cookies-label">Session cookie for the pasted link's site</span>
             <textarea id="cookies" name="cookies" rows="3" spellcheck="false"
-              placeholder="Paste your `sessionid` value, the full Cookie header, or a cookies.txt export from instagram.com"></textarea>
+              placeholder="Paste the login cookie value (Instagram/TikTok: sessionid, DeviantArt: auth, YouTube: full Cookie header), the full Cookie header, or a cookies.txt export"></textarea>
             <span class="hint">
-              In your browser: DevTools → Application/Storage → Cookies → instagram.com → copy <code>sessionid</code>.
-              Sent over HTTPS only to this server, kept in memory for the job, never written to disk.
+              In your browser: DevTools → Application/Storage → Cookies → the site → copy the login cookie.
+              Sent only to this server, kept in memory for the job, never written to disk.
             </span>
           </label>
           <label class="check">
@@ -110,8 +112,9 @@
       <details class="reality">
         <summary>Why is the original “only” 1080p?</summary>
         <p>
-          Instagram re-encodes every upload and never delivers 4K: its CDN tops out at
-          <strong>1080 × 1920, usually 30 fps</strong>. Every downloader that reports 4K is upscaling.
+          Instagram and TikTok re-encode every upload and never deliver 4K: their CDNs top out at
+          <strong>1080p, usually 30 fps</strong> (YouTube does serve 4K/8K natively when the creator uploaded it;
+          DeviantArt serves the original image file). Every downloader that reports 4K from Instagram is upscaling.
           This app is honest about it — it fetches the best rendition that exists, and the
           <em>Enhance</em> mode computes the 4K 60 fps version here. The default engine is classical
           signal processing (ffmpeg motion-compensated interpolation, Lanczos scaling, contrast-adaptive
@@ -128,6 +131,7 @@
     <article class="result card">
       <div class="preview">
         <video controls muted playsinline preload="metadata"></video>
+        <img alt="" hidden />
       </div>
       <div class="result-body">
         <p class="result-kind"></p>

@@ -68,7 +68,7 @@ def run_job(settings, url, *, local, discovery, monkeypatch, mode="original"):
 def test_local_client_falls_back_to_browser_login(settings, fake_download, monkeypatch):
     discovered = []
 
-    def discovery(_settings):
+    def discovery(_settings, _platform=None):
         discovered.append(True)
         return found(BrowserSession("safari", {"sessionid": "abc", "ds_user_id": "1"}))
 
@@ -86,7 +86,7 @@ def test_story_uses_browser_login_immediately(settings, fake_download, monkeypat
         STORY,
         local=True,
         monkeypatch=monkeypatch,
-        discovery=lambda _s: found(BrowserSession("firefox", {"sessionid": "abc"})),
+        discovery=lambda _s, _p=None: found(BrowserSession("firefox", {"sessionid": "abc"})),
     )
     assert job.status.value == "done", job.error
     assert fake_download == ["browser-auto"]
@@ -94,7 +94,7 @@ def test_story_uses_browser_login_immediately(settings, fake_download, monkeypat
 
 
 def test_remote_client_never_gets_operator_cookies(settings, fake_download, monkeypatch):
-    def discovery(_settings):
+    def discovery(_settings, _platform=None):
         raise AssertionError("browser cookies must not be read for remote clients")
 
     job = run_job(settings, REEL, local=False, discovery=discovery, monkeypatch=monkeypatch)
@@ -111,7 +111,9 @@ def test_no_browser_session_gives_actionable_error(settings, fake_download, monk
             ("Chrome", "not logged in to Instagram"),
         ),
     )
-    job = run_job(settings, REEL, local=True, discovery=lambda _s: missed, monkeypatch=monkeypatch)
+    job = run_job(
+        settings, REEL, local=True, discovery=lambda _s, _p=None: missed, monkeypatch=monkeypatch
+    )
     assert job.status.value == "error"
     assert "no Instagram login was found in your browsers" in job.error
     assert "Chrome: not logged in to Instagram" in job.error
@@ -122,7 +124,7 @@ def test_no_browser_session_gives_actionable_error(settings, fake_download, monk
 def test_auto_browser_cookies_can_be_disabled(settings, fake_download, monkeypatch):
     off = replace(settings, auto_browser_cookies="off")
 
-    def discovery(_settings):
+    def discovery(_settings, _platform=None):
         raise AssertionError("discovery disabled")
 
     job = run_job(off, REEL, local=True, discovery=discovery, monkeypatch=monkeypatch)
@@ -137,7 +139,7 @@ def test_always_mode_applies_to_remote_clients(settings, fake_download, monkeypa
         REEL,
         local=False,
         monkeypatch=monkeypatch,
-        discovery=lambda _s: found(BrowserSession("chrome", {"sessionid": "abc"})),
+        discovery=lambda _s, _p=None: found(BrowserSession("chrome", {"sessionid": "abc"})),
     )
     assert job.status.value == "done", job.error
     assert job.auth == "your Chrome login"
@@ -147,7 +149,7 @@ def test_anonymous_attempts_are_skipped_after_a_refusal(settings, fake_download,
     monkeypatch.setattr(
         jobs_module,
         "discover_browser_session",
-        lambda _s: found(BrowserSession("chrome", {"sessionid": "abc"})),
+        lambda _s, _p=None: found(BrowserSession("chrome", {"sessionid": "abc"})),
     )
 
     async def scenario():

@@ -54,6 +54,16 @@
     const m = Math.floor(s / 60);
     return m ? `${m}:${String(s % 60).padStart(2, "0")}` : `${s}s`;
   };
+  let toastTimer = null;
+  const toast = (html) => {
+    let el = document.querySelector(".toast");
+    if (!el) { el = document.createElement("div"); el.className = "toast"; el.setAttribute("role", "status"); document.body.appendChild(el); }
+    el.innerHTML = html;
+    el.hidden = false;
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => { el.hidden = true; }, 6000);
+  };
+
   const chip = (label, value) => {
     const span = document.createElement("span");
     span.className = "chip";
@@ -62,14 +72,24 @@
     return span;
   };
 
-  const IG_URL_RE = /(?:https?:\/\/)?(?:[\w-]+\.)*(?:instagram\.com|instagr\.am|ig\.me)\/\S+/i;
+  const IG_URL_RE = /(?:https?:\/\/)?(?:[\w-]+\.)*(?:instagram\.com|instagr\.am|ig\.me|youtube\.com|youtu\.be|youtube-nocookie\.com|tiktok\.com|deviantart\.com|fav\.me)\/\S+/i;
   const extractUrl = (text) => {
     const match = (text || "").match(IG_URL_RE);
     return match ? match[0].replace(/[.,;:!?)"']+$/, "") : null;
   };
 
+  const platformOf = (value) => {
+    if (/youtube\.com|youtu\.be/i.test(value)) return "youtube";
+    if (/tiktok\.com/i.test(value)) return "tiktok";
+    if (/deviantart\.com|fav\.me/i.test(value)) return "deviantart";
+    if (/instagram\.com|instagr\.am|ig\.me/i.test(value)) return "instagram";
+    return null;
+  };
+
   const classifyUrl = (value) => {
     if (!value) return null;
+    const platform = platformOf(value);
+    if (platform && platform !== "instagram") return platform;
     if (/\/stories\/highlights\//.test(value)) return "highlight";
     if (/\/stories\//.test(value)) return "story";
     if (/\/reels?\//.test(value)) return "reel";
@@ -141,7 +161,13 @@
         advanced.open = true;
       }
     } else if (kind === "unknown") {
-      urlHint.textContent = "Paste a link to a reel (/reel/…), post (/p/…) or story (/stories/user/…).";
+      urlHint.textContent = "Paste a link to an Instagram reel/post/story, a YouTube video, a TikTok or a DeviantArt deviation.";
+    } else if (kind === "youtube") {
+      urlHint.textContent = "YouTube — served natively up to the creator's upload resolution; enhancement only kicks in below the target.";
+    } else if (kind === "tiktok") {
+      urlHint.textContent = "TikTok — best available rendition, no watermark when the platform offers it.";
+    } else if (kind === "deviantart") {
+      urlHint.textContent = "DeviantArt — original image file, or the highest film rendition. Images are upscaled in Enhance mode.";
     } else {
       urlHint.textContent = kind === "share" ? "Share link — it will be resolved automatically." : "";
     }
@@ -163,16 +189,16 @@
     if (caps.stories_auth_configured) {
       authStatus.className = "hint ok";
       authStatus.textContent = "This server already has an Instagram session configured — stories work without pasting anything. You can still paste your own cookie to use your account instead.";
-      summary.textContent = "Advanced · Instagram login (configured on the server)";
+      summary.textContent = "Advanced · logins (Instagram configured on the server)";
     } else if (browserLoginActive()) {
       authStatus.className = "hint ok";
       const browsers = (caps.browser_login.browsers || []).slice(0, 3).map((b) => b[0].toUpperCase() + b.slice(1)).join(", ");
-      authStatus.textContent = `You're on the computer running this server, so whenever Instagram demands a login the app uses the Instagram session from your own browser (${browsers}…) automatically — nothing to paste. Only fill the box below if that fails (e.g. Safari needs Full Disk Access to be readable).`;
-      summary.textContent = "Advanced · Instagram login (automatic from your browser)";
+      authStatus.textContent = `You're on the computer running this server, so whenever a site demands a login the app uses the session from your own browser (${browsers}…) automatically — nothing to paste. Only fill the box below if that fails (e.g. Safari needs Full Disk Access to be readable).`;
+      summary.textContent = "Advanced · logins (automatic from your browser)";
     } else {
       authStatus.className = "hint";
-      authStatus.textContent = "This server has no Instagram session configured. Paste a cookie below to download stories, private content, or anything Instagram hides from logged-out visitors.";
-      summary.textContent = "Advanced · Instagram login (needed for stories & most reels)";
+      authStatus.textContent = "This server has no Instagram session configured. Paste a cookie below to download Instagram stories, private content, or anything a site hides from logged-out visitors. YouTube, TikTok and DeviantArt usually work without one.";
+      summary.textContent = "Advanced · logins (needed for Instagram stories & most reels)";
     }
     if (caps.allow_user_cookies === false) {
       cookiesInput.disabled = true;
@@ -206,8 +232,13 @@
     substageEl.textContent = sub;
 
     chipsEl.innerHTML = "";
+    if (job.platform_name) chipsEl.appendChild(chip("site", job.platform_name));
     const src = job.sources && job.sources[0];
-    if (src) {
+    if (src && src.is_image) {
+      const who = src.channel ? `${src.channel}` : (src.uploader || "");
+      if (who) chipsEl.appendChild(chip("by", who));
+      chipsEl.appendChild(chip("source", `${src.width}×${src.height} image`));
+    } else if (src) {
       const who = src.channel ? `@${src.channel}` : (src.uploader || "");
       if (who) chipsEl.appendChild(chip("by", who));
       chipsEl.appendChild(chip("source", `${src.width}×${src.height} @ ${fmtFps(src.fps)} fps`));
@@ -244,18 +275,39 @@
       const node = template.content.firstElementChild.cloneNode(true);
       node.classList.add(out.kind);
       const video = node.querySelector("video");
-      video.src = `${out.url}?inline=1`;
+      const img = node.querySelector("img");
+      if (out.is_image) {
+        video.hidden = true;
+        video.removeAttribute("src");
+        img.hidden = false;
+        img.src = `${out.url}?inline=1`;
+        img.alt = out.download_name;
+      } else {
+        img.hidden = true;
+        video.hidden = false;
+        video.src = `${out.url}?inline=1`;
+      }
+      const platformName = job.platform_name || "the platform";
       node.querySelector(".result-kind").textContent = out.kind === "enhanced"
         ? `Enhanced · ${out.engine || ""}`
-        : "Original · best rendition Instagram serves";
+        : `Original · best rendition ${platformName} serves`;
       node.querySelector(".result-name").textContent = out.download_name;
-      node.querySelector(".result-meta").textContent =
-        `${out.width}×${out.height} · ${fmtFps(out.fps)} fps · ${fmtDuration(out.duration)} · ${fmtBytes(out.size)}` +
-        (out.vcodec ? ` · ${out.vcodec}` : "");
+      node.querySelector(".result-meta").textContent = out.is_image
+        ? `${out.width}×${out.height} · image · ${fmtBytes(out.size)}`
+        : `${out.width}×${out.height} · ${fmtFps(out.fps)} fps · ${fmtDuration(out.duration)} · ${fmtBytes(out.size)}` +
+          (out.vcodec ? ` · ${out.vcodec}` : "");
       const link = node.querySelector(".download");
       link.href = out.url;
       link.setAttribute("download", out.download_name);
       link.textContent = out.kind === "enhanced" ? "Download enhanced" : "Download original";
+      link.addEventListener("click", () => {
+        // Embedded browsers save silently; confirm it and block accidental repeat clicks.
+        const label = link.textContent;
+        link.classList.add("busy");
+        link.textContent = "Saving…";
+        toast(`<b>Download started:</b> ${out.download_name} — look in your browser's Downloads folder.`);
+        setTimeout(() => { link.classList.remove("busy"); link.textContent = label; }, 4000);
+      });
       resultsEl.appendChild(node);
     });
   };

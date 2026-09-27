@@ -1,11 +1,14 @@
-"""Instagram cookie handling.
+"""Cookie handling for every supported platform.
 
-Stories (and private content) are only visible to logged-in accounts, so yt-dlp needs a
-valid `sessionid` cookie. Cookies can come from, in priority order:
+Instagram stories (and, these days, most Instagram content) are only visible to logged-in
+accounts; YouTube and TikTok occasionally demand a login too. Cookies can come from, in
+priority order:
 
-1. the request (user pastes a `sessionid`, a `Cookie:` header string, or a cookies.txt export),
-2. `IG_SESSIONID` / `IG_COOKIES` / `IG_COOKIES_FILE` environment variables,
-3. `IG_COOKIES_FROM_BROWSER` (yt-dlp reads them straight from a local browser profile).
+1. the request (user pastes the login cookie value, a `Cookie:` header string, or a cookies.txt
+   export),
+2. `<PLATFORM>_COOKIES` / `COOKIES_FILE` environment variables,
+3. `COOKIES_FROM_BROWSER` (yt-dlp reads them straight from a local browser profile),
+4. automatic discovery in a local browser for same-machine requests (see jobs.py).
 
 Pasted cookies are only ever kept in memory and attached to a per-job cookie jar.
 """
@@ -23,10 +26,12 @@ from typing import Any
 from yt_dlp.cookies import SUPPORTED_BROWSERS, YDLLogger, extract_cookies_from_browser
 
 from .config import Settings
+from .urls import PLATFORMS, Platform
 
 log = logging.getLogger(__name__)
 
-INSTAGRAM_COOKIE_DOMAIN = ".instagram.com"
+INSTAGRAM = PLATFORMS["instagram"]
+INSTAGRAM_COOKIE_DOMAIN = INSTAGRAM.cookie_domain
 RELEVANT_COOKIES = {"sessionid", "ds_user_id", "csrftoken", "mid", "ig_did", "rur", "datr"}
 
 
@@ -41,6 +46,7 @@ class CookieSource:
     cookie_file: Path | None = None
     browser_spec: tuple[str, ...] | None = None
     browser_name: str | None = None
+    domain: str = INSTAGRAM_COOKIE_DOMAIN  # domain in-memory cookies are attached to
 
     @property
     def authenticated(self) -> bool:
@@ -60,7 +66,8 @@ class CookieSource:
         }[self.kind]
 
 
-def _parse_netscape(text: str) -> dict[str, str]:
+def _parse_netscape(text: str, domain_suffix: str) -> dict[str, str]:
+    wanted = domain_suffix.lstrip(".").lower()
     cookies: dict[str, str] = {}
     for line in text.splitlines():
         line = line.strip()
@@ -70,7 +77,8 @@ def _parse_netscape(text: str) -> dict[str, str]:
         if len(fields) < 7:
             continue
         domain, _flag, _path, _secure, _expiry, name, value = fields[:7]
-        if "instagram" not in domain.lower():
+        host = domain.lower().lstrip(".")
+        if host != wanted and not host.endswith("." + wanted):
             continue
         cookies[name.strip()] = value.strip()
     return cookies
@@ -90,20 +98,25 @@ def _parse_header(text: str) -> dict[str, str]:
     return cookies
 
 
-def parse_cookie_text(text: str | None) -> dict[str, str]:
-    """Accept a bare sessionid, a `Cookie:` header string or a Netscape cookies.txt export."""
+def parse_cookie_text(text: str | None, platform: Platform = INSTAGRAM) -> dict[str, str]:
+    """Accept a bare login-cookie value, a `Cookie:` header string or a cookies.txt export."""
     if text is None or not text.strip():
         return {}
     text = text.strip()
     if any("\t" in line for line in text.splitlines()):
-        cookies = _parse_netscape(text)
+        cookies = _parse_netscape(text, platform.cookie_domain)
     elif "=" in text:
         cookies = _parse_header(text)
     else:
-        cookies = {"sessionid": text}
+        cookies = {platform.login_cookie: text}
 
     cookies = {k: v for k, v in cookies.items() if v}
-    if "sessionid" not in cookies:
+    if not cookies:
+        raise CookieError(
+            f"No cookies for {platform.cookie_domain.lstrip('.')} found. Paste the "
+            f"`{platform.login_cookie}` value, the full Cookie header, or a cookies.txt export."
+        )
+    if platform.login_cookie not in cookies and platform.id == "instagram":
         raise CookieError(
             "No `sessionid` cookie found. Paste the sessionid value, the full Cookie header, "
             "or a cookies.txt export from instagram.com."
@@ -128,21 +141,25 @@ def parse_browser_spec(spec: str) -> tuple[str, ...]:
     return tuple(parts)
 
 
-def resolve_cookie_source(settings: Settings, request_cookie_text: str | None) -> CookieSource:
+def resolve_cookie_source(
+    settings: Settings, request_cookie_text: str | None, platform: Platform = INSTAGRAM
+) -> CookieSource:
+    domain = platform.cookie_domain
     if request_cookie_text and request_cookie_text.strip():
         if not settings.allow_user_cookies:
             raise CookieError("This server does not accept user-supplied cookies.")
-        return CookieSource(kind="request", cookies=parse_cookie_text(request_cookie_text))
-    if settings.ig_cookies:
-        return CookieSource(kind="env", cookies=parse_cookie_text(settings.ig_cookies))
-    if settings.ig_sessionid:
-        return CookieSource(kind="env", cookies={"sessionid": settings.ig_sessionid})
-    if settings.ig_cookies_file:
-        return CookieSource(kind="file", cookie_file=settings.ig_cookies_file)
-    if settings.ig_cookies_from_browser:
-        spec = parse_browser_spec(settings.ig_cookies_from_browser)
-        return CookieSource(kind="browser", browser_spec=spec, browser_name=spec[0])
-    return CookieSource(kind="none")
+        cookies = parse_cookie_text(request_cookie_text, platform)
+        return CookieSource(kind="request", cookies=cookies, domain=domain)
+    configured = settings.platform_cookies.get(platform.id)
+    if configured:
+        cookies = parse_cookie_text(configured, platform)
+        return CookieSource(kind="env", cookies=cookies, domain=domain)
+    if settings.cookies_file:
+        return CookieSource(kind="file", cookie_file=settings.cookies_file, domain=domain)
+    if settings.cookies_from_browser:
+        spec = parse_browser_spec(settings.cookies_from_browser)
+        return CookieSource(kind="browser", browser_spec=spec, browser_name=spec[0], domain=domain)
+    return CookieSource(kind="none", domain=domain)
 
 
 # --------------------------------------------------------------------------- browser discovery
@@ -153,6 +170,7 @@ class BrowserSession:
     browser: str
     cookies: dict[str, str]
     profile: str | None = None
+    domain: str = INSTAGRAM_COOKIE_DOMAIN
 
     @property
     def label(self) -> str:
@@ -160,7 +178,9 @@ class BrowserSession:
         return f"{name} ({self.profile})" if self.profile else name
 
     def as_source(self) -> CookieSource:
-        return CookieSource(kind="browser-auto", cookies=self.cookies, browser_name=self.label)
+        return CookieSource(
+            kind="browser-auto", cookies=self.cookies, browser_name=self.label, domain=self.domain
+        )
 
 
 @dataclass(frozen=True)
@@ -177,8 +197,8 @@ class DiscoveryResult:
 
 OUTCOME_TEXT = {
     "ok": "logged in",
-    "not-logged-in": "not logged in to Instagram",
-    "no-cookies": "no Instagram cookies",
+    "not-logged-in": "not logged in",
+    "no-cookies": "no cookies for this site",
     "not-installed": "not installed",
     "no-permission": "no permission to read its cookies (grant Full Disk Access)",
     "error": "could not read cookies",
@@ -188,17 +208,25 @@ OUTCOME_TEXT = {
 # user who logs in to Instagram in their browser does not have to restart the server.
 _DISCOVERY_TTL_OK = 600.0
 _DISCOVERY_TTL_MISS = 45.0
-_discovery_cache: dict[tuple[str, ...], tuple[float, DiscoveryResult]] = {}
+_discovery_cache: dict[tuple, tuple[float, DiscoveryResult]] = {}
 
 
-def _instagram_cookies(jar: http.cookiejar.CookieJar) -> dict[str, str]:
+def _site_cookies(jar: http.cookiejar.CookieJar, domain_suffix: str) -> dict[str, str]:
+    wanted = domain_suffix.lstrip(".").lower()
     cookies: dict[str, str] = {}
     for cookie in jar:
         domain = (cookie.domain or "").lstrip(".").lower()
-        if domain == "instagram.com" or domain.endswith(".instagram.com"):
-            if cookie.name in RELEVANT_COOKIES and cookie.value:
-                cookies[cookie.name] = cookie.value
+        if (domain == wanted or domain.endswith("." + wanted)) and cookie.value:
+            cookies[cookie.name] = cookie.value
     return cookies
+
+
+def _instagram_cookies(jar: http.cookiejar.CookieJar) -> dict[str, str]:
+    return {
+        k: v
+        for k, v in _site_cookies(jar, INSTAGRAM_COOKIE_DOMAIN).items()
+        if k in RELEVANT_COOKIES
+    }
 
 
 def _classify_failure(exc: Exception) -> str:
@@ -210,8 +238,10 @@ def _classify_failure(exc: Exception) -> str:
     return "error"
 
 
-def _read_browser(entry: str) -> tuple[str, str | None, dict[str, str] | None, str]:
-    """Return (browser, profile, instagram cookies or None, outcome) for one order entry."""
+def _read_browser(
+    entry: str, platform: Platform
+) -> tuple[str, str | None, dict[str, str] | None, str]:
+    """Return (browser, profile, site cookies or None, outcome) for one order entry."""
     spec = parse_browser_spec(entry)
     browser = spec[0]
     profile = spec[1] if len(spec) > 1 else None
@@ -227,16 +257,20 @@ def _read_browser(entry: str) -> tuple[str, str | None, dict[str, str] | None, s
         outcome = _classify_failure(exc)
         log.info("no usable %s cookies (%s): %s", entry, outcome, str(exc).splitlines()[0][:160])
         return browser, profile, None, outcome
-    cookies = _instagram_cookies(jar)
-    if cookies.get("sessionid"):
+    cookies = _site_cookies(jar, platform.cookie_domain)
+    if cookies.get(platform.login_cookie):
         return browser, profile, cookies, "ok"
     return browser, profile, None, "not-logged-in" if cookies else "no-cookies"
 
 
 def discover_browser_session(
-    settings: Settings, *, now: float | None = None, use_cache: bool = True
+    settings: Settings,
+    platform: Platform = INSTAGRAM,
+    *,
+    now: float | None = None,
+    use_cache: bool = True,
 ) -> DiscoveryResult:
-    """Find a logged-in instagram.com session in a locally installed browser (blocking).
+    """Find a logged-in session for `platform` in a locally installed browser (blocking).
 
     Entries in `settings.browser_cookie_order` use yt-dlp's `BROWSER[+KEYRING][:PROFILE]`
     syntax, e.g. `chrome` (default profile) or `chrome:Profile 3`. Browsers that are missing,
@@ -244,7 +278,7 @@ def discover_browser_session(
     reported in the result instead of raising.
     """
     now = time.time() if now is None else now
-    key = tuple(settings.browser_cookie_order)
+    key = (platform.id, *settings.browser_cookie_order)
     cached = _discovery_cache.get(key) if use_cache else None
     if cached:
         stamp, result = cached
@@ -253,13 +287,15 @@ def discover_browser_session(
 
     attempts: list[tuple[str, str]] = []
     session: BrowserSession | None = None
-    for entry in key:
-        browser, profile, cookies, outcome = _read_browser(entry)
+    for entry in settings.browser_cookie_order:
+        browser, profile, cookies, outcome = _read_browser(entry, platform)
         label = f"{browser.capitalize()} ({profile})" if profile else browser.capitalize()
         attempts.append((label, OUTCOME_TEXT.get(outcome, outcome)))
         if cookies:
-            log.info("using Instagram session from %s", label)
-            session = BrowserSession(browser=browser, cookies=cookies, profile=profile)
+            log.info("using %s session from %s", platform.name, label)
+            session = BrowserSession(
+                browser=browser, cookies=cookies, profile=profile, domain=platform.cookie_domain
+            )
             break
     result = DiscoveryResult(session=session, attempts=tuple(attempts))
     _discovery_cache[key] = (now, result)
@@ -278,14 +314,16 @@ def apply_cookie_source_to_opts(opts: dict[str, Any], source: CookieSource) -> N
         opts["cookiesfrombrowser"] = source.browser_spec
 
 
-def make_cookie(name: str, value: str) -> http.cookiejar.Cookie:
+def make_cookie(
+    name: str, value: str, domain: str = INSTAGRAM_COOKIE_DOMAIN
+) -> http.cookiejar.Cookie:
     return http.cookiejar.Cookie(
         version=0,
         name=name,
         value=value,
         port=None,
         port_specified=False,
-        domain=INSTAGRAM_COOKIE_DOMAIN,
+        domain=domain,
         domain_specified=True,
         domain_initial_dot=True,
         path="/",
@@ -303,4 +341,4 @@ def make_cookie(name: str, value: str) -> http.cookiejar.Cookie:
 def inject_cookies(cookiejar: http.cookiejar.CookieJar, source: CookieSource) -> None:
     """Add in-memory cookies to an existing yt-dlp cookie jar."""
     for name, value in source.cookies.items():
-        cookiejar.set_cookie(make_cookie(name, value))
+        cookiejar.set_cookie(make_cookie(name, value, source.domain))
