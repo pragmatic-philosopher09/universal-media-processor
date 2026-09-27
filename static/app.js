@@ -243,6 +243,9 @@
     if (tickTimer) { clearInterval(tickTimer); tickTimer = null; }
   };
 
+  const SERVER_DOWN = `Can't reach the server at ${location.origin}. Is it still running? Start it with \`uvicorn app.main:app\` and reload this page.`;
+  let pollFailures = 0;
+
   const poll = async () => {
     if (!currentJob) return;
     try {
@@ -253,6 +256,7 @@
         return;
       }
       const job = await res.json();
+      pollFailures = 0;
       currentJob = job;
       showStatus(job);
       if (["done", "error", "cancelled"].includes(job.status)) {
@@ -262,6 +266,12 @@
       }
     } catch (err) {
       console.warn("poll failed", err);
+      pollFailures += 1;
+      if (pollFailures >= 8) {
+        showStatus({ ...currentJob, status: "error", stage: "Connection lost", error: SERVER_DOWN });
+        stopPolling();
+        return;
+      }
     }
     const delay = currentJob && currentJob.status === "enhancing" ? 1500 : 800;
     pollTimer = setTimeout(poll, delay);
@@ -272,11 +282,18 @@
     resultsEl.classList.add("hidden");
     resultsEl.innerHTML = "";
     showStatus({ status: "queued", stage: "Submitting…", progress: 0, elapsed: 0 });
-    const res = await fetch("/api/jobs", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
+    let res;
+    try {
+      res = await fetch("/api/jobs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+    } catch (err) {
+      console.warn("submit failed", err);
+      showStatus({ status: "error", stage: "Server unreachable", error: SERVER_DOWN, progress: 0, elapsed: 0 });
+      return;
+    }
     if (!res.ok) {
       let detail = `Request failed (${res.status})`;
       try {
@@ -287,6 +304,7 @@
       return;
     }
     currentJob = await res.json();
+    pollFailures = 0;
     const started = Date.now();
     showStatus(currentJob);
     tickTimer = setInterval(() => {
@@ -336,7 +354,10 @@
   fetch("/api/capabilities")
     .then((r) => r.json())
     .then(applyCapabilities)
-    .catch(() => { capsEl.textContent = "Could not load server capabilities."; });
+    .catch(() => {
+      capsEl.textContent = SERVER_DOWN;
+      capsEl.classList.add("warn");
+    });
   const params = new URLSearchParams(location.search);
   if (params.get("url")) {
     urlInput.value = params.get("url");

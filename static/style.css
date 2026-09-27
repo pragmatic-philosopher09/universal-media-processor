@@ -171,6 +171,7 @@ button:active { transform: translateY(1px); }
 .reality summary { cursor: pointer; font-weight: 600; }
 .reality p { margin: 8px 0 0; max-width: 72ch; }
 .caps { margin: 0; font-size: 13px; }
+.caps.warn { color: var(--warn); font-weight: 600; }
 .legal { margin: 0; font-size: 12px; opacity: 0.8; }
 
 .hidden { display: none !important; }
