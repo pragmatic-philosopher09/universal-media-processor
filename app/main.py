@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ipaddress
 import logging
 import platform
 from contextlib import asynccontextmanager
@@ -43,6 +44,20 @@ def client_ip(request: Request, settings: Settings) -> str:
     return request.client.host if request.client else "unknown"
 
 
+def client_is_local(request: Request, settings: Settings) -> bool:
+    """True only when the request demonstrably comes from the machine running the server.
+
+    Any proxy header (even with TRUST_PROXY off) marks the client as remote, so a reverse proxy
+    on the same host can never make remote users look local.
+    """
+    if any(request.headers.get(h) for h in ("x-forwarded-for", "forwarded", "x-real-ip")):
+        return False
+    try:
+        return ipaddress.ip_address(client_ip(request, settings)).is_loopback
+    except ValueError:
+        return False
+
+
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or Settings.from_env()
     manager = JobManager(settings)
@@ -67,10 +82,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.manager = manager
 
     @app.get("/api/capabilities")
-    async def capabilities() -> dict:
+    async def capabilities(request: Request) -> dict:
         encoders = await list_encoders(settings)
         encoder = await choose_encoder(settings)
+        local = client_is_local(request, settings)
         return {
+            "browser_login": {
+                "mode": settings.auto_browser_cookies,
+                "active_for_you": settings.auto_browser_cookies == "always"
+                or (settings.auto_browser_cookies == "local" and local),
+                "browsers": list(settings.browser_cookie_order),
+            },
             "ffmpeg": {
                 "encoder": encoder,
                 "hardware": encoder not in {"libx264", "libx265"},
@@ -101,7 +123,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             cookies=payload.cookies,
         )
         try:
-            job = manager.create(payload.url, options, client_ip(request, settings))
+            job = manager.create(
+                payload.url,
+                options,
+                client_ip(request, settings),
+                client_is_local=client_is_local(request, settings),
+            )
         except (InvalidURL, CookieError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except TooManyJobs as exc:

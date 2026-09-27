@@ -181,3 +181,123 @@ def test_inject_cookies_into_jar():
     assert set(names) == {"sessionid", "ds_user_id"}
     assert names["sessionid"].domain == ".instagram.com"
     assert names["sessionid"].secure
+
+
+# ---------------------------------------------------------------------------- pasted text
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "Check this out 😍 https://www.instagram.com/reel/C1a2B3c4D5e/?igsh=abc see you!",
+        "https://www.instagram.com/reel/C1a2B3c4D5e/.",
+        "reel from IG: instagram.com/reel/C1a2B3c4D5e/ (sound on)",
+    ],
+)
+def test_url_is_extracted_from_pasted_text(raw):
+    result = normalize_instagram_url(raw, DEFAULT_ALLOWED_DOMAINS)
+    assert result.url == "https://www.instagram.com/reel/C1a2B3c4D5e/"
+    assert result.kind == "reel"
+
+
+# ---------------------------------------------------------------------------- browser discovery
+
+
+def _jar(*cookies):
+    import http.cookiejar
+
+    from app.cookies import make_cookie
+
+    jar = http.cookiejar.CookieJar()
+    for name, value, domain in cookies:
+        cookie = make_cookie(name, value)
+        cookie.domain = domain
+        jar.set_cookie(cookie)
+    return jar
+
+
+def test_discover_browser_session_skips_unreadable_browsers(settings, monkeypatch):
+    from app import cookies as cookies_module
+
+    calls = []
+
+    def fake_extract(browser, profile=None, logger=None, *, keyring=None, container=None):
+        calls.append((browser, profile))
+        if browser == "safari":
+            raise PermissionError("Operation not permitted")
+        if browser == "chrome":
+            return _jar(
+                ("sessionid", "chrome-session", ".instagram.com"),
+                ("csrftoken", "x", ".instagram.com"),
+                ("sessionid", "not-ig", ".facebook.com"),
+            )
+        raise FileNotFoundError(browser)
+
+    monkeypatch.setattr(cookies_module, "extract_cookies_from_browser", fake_extract)
+    cookies_module.clear_discovery_cache()
+    result = cookies_module.discover_browser_session(settings, now=1000.0)
+    session = result.session
+    assert session is not None
+    assert session.browser == "chrome" and session.profile is None
+    assert session.cookies == {"sessionid": "chrome-session", "csrftoken": "x"}
+    assert calls == [("safari", None), ("chrome", None)]
+    assert result.attempts == (
+        ("Safari", "no permission to read its cookies (grant Full Disk Access)"),
+        ("Chrome", "logged in"),
+    )
+    source = session.as_source()
+    assert source.kind == "browser-auto" and source.describe() == "your Chrome login"
+
+    # Cached: no new extraction within the TTL.
+    assert cookies_module.discover_browser_session(settings, now=1100.0) is result
+    assert len(calls) == 2
+
+
+def test_discover_browser_session_reports_logged_out_profiles(settings, monkeypatch):
+    from dataclasses import replace
+
+    from app import cookies as cookies_module
+
+    def fake_extract(browser, profile=None, logger=None, *, keyring=None, container=None):
+        if browser == "chrome" and profile is None:
+            return _jar(("ds_user_id", "1", ".instagram.com"), ("csrftoken", "x", ".instagram.com"))
+        if browser == "chrome" and profile == "Profile 6":
+            return _jar(("sessionid", "p6", ".instagram.com"))
+        if browser == "brave":
+            return _jar(("foo", "bar", ".example.com"))
+        raise FileNotFoundError(browser)
+
+    monkeypatch.setattr(cookies_module, "extract_cookies_from_browser", fake_extract)
+    cookies_module.clear_discovery_cache()
+
+    plain = replace(settings, browser_cookie_order=("chrome", "brave", "firefox"))
+    result = cookies_module.discover_browser_session(plain, now=0.0)
+    assert result.session is None
+    assert result.summary() == (
+        "Chrome: not logged in to Instagram; Brave: no Instagram cookies; Firefox: not installed"
+    )
+
+    targeted = replace(settings, browser_cookie_order=("chrome:Profile 6", "chrome"))
+    result = cookies_module.discover_browser_session(targeted, now=0.0)
+    assert result.session is not None
+    assert result.session.profile == "Profile 6"
+    assert result.session.as_source().describe() == "your Chrome (Profile 6) login"
+
+
+def test_discover_browser_session_miss_is_retried_sooner(settings, monkeypatch):
+    from app import cookies as cookies_module
+
+    attempts = {"n": 0}
+
+    def fake_extract(browser, profile=None, logger=None, *, keyring=None, container=None):
+        attempts["n"] += 1
+        raise FileNotFoundError(browser)
+
+    monkeypatch.setattr(cookies_module, "extract_cookies_from_browser", fake_extract)
+    cookies_module.clear_discovery_cache()
+    assert cookies_module.discover_browser_session(settings, now=0.0).session is None
+    first = attempts["n"]
+    assert cookies_module.discover_browser_session(settings, now=10.0).session is None
+    assert attempts["n"] == first  # within the miss TTL: cached
+    assert cookies_module.discover_browser_session(settings, now=100.0).session is None
+    assert attempts["n"] == first * 2  # retried after the miss TTL

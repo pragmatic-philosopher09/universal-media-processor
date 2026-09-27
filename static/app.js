@@ -62,6 +62,12 @@
     return span;
   };
 
+  const IG_URL_RE = /(?:https?:\/\/)?(?:[\w-]+\.)*(?:instagram\.com|instagr\.am|ig\.me)\/\S+/i;
+  const extractUrl = (text) => {
+    const match = (text || "").match(IG_URL_RE);
+    return match ? match[0].replace(/[.,;:!?)"']+$/, "") : null;
+  };
+
   const classifyUrl = (value) => {
     if (!value) return null;
     if (/\/stories\/highlights\//.test(value)) return "highlight";
@@ -113,15 +119,21 @@
     enhanceOptions.classList.toggle("hidden", !enhance);
   };
 
+  const PASTE_TIP = "Tip: paste anywhere on this page (⌘V / Ctrl+V) and the download starts immediately.";
+  const browserLoginActive = () => !!(capabilities && capabilities.browser_login && capabilities.browser_login.active_for_you);
+
   const syncUrlHint = () => {
     const kind = classifyUrl(urlInput.value.trim());
     urlHint.className = "hint";
-    if (!kind) { urlHint.textContent = ""; return; }
+    if (!kind) { urlHint.textContent = PASTE_TIP; return; }
     if (kind === "story" || kind === "highlight") {
       const configured = capabilities && capabilities.stories_auth_configured;
       const pasted = cookiesInput.value.trim().length > 0;
       if (configured || pasted) {
         urlHint.textContent = "Story link — login is configured, you're good to go.";
+        urlHint.classList.add("ok");
+      } else if (browserLoginActive()) {
+        urlHint.textContent = "Story link — your browser's Instagram login will be used automatically.";
         urlHint.classList.add("ok");
       } else {
         urlHint.textContent = "Stories need an Instagram login. Open Advanced and paste your sessionid cookie.";
@@ -143,14 +155,25 @@
       aiOption.disabled = true;
       aiOption.textContent = "AI · not installed on this server";
       if (engineSelect.value === "ai") engineSelect.value = "auto";
-      engineHint.textContent = "Auto uses ffmpeg here (RIFE/Real-ESRGAN binaries not found).";
+      engineHint.textContent = "Auto uses the ffmpeg engine here — classical interpolation and scaling, no neural networks (RIFE/Real-ESRGAN binaries not found).";
     } else {
-      engineHint.textContent = `AI: ${ai.upscale_model} + ${ai.interpolation_model}. Slow but the most natural-looking result.`;
+      engineHint.textContent = `AI: ${ai.upscale_model} + ${ai.interpolation_model} neural networks. Much slower, experimental and unverified on this hardware.`;
     }
-    authStatus.className = "hint " + (caps.stories_auth_configured ? "ok" : "");
-    authStatus.textContent = caps.stories_auth_configured
-      ? "This server already has an Instagram session configured — stories work without pasting anything. You can still paste your own cookie to use your account instead."
-      : "This server has no Instagram session configured. Paste a cookie below to download stories or private content.";
+    const summary = $("#advanced-summary");
+    if (caps.stories_auth_configured) {
+      authStatus.className = "hint ok";
+      authStatus.textContent = "This server already has an Instagram session configured — stories work without pasting anything. You can still paste your own cookie to use your account instead.";
+      summary.textContent = "Advanced · Instagram login (configured on the server)";
+    } else if (browserLoginActive()) {
+      authStatus.className = "hint ok";
+      const browsers = (caps.browser_login.browsers || []).slice(0, 3).map((b) => b[0].toUpperCase() + b.slice(1)).join(", ");
+      authStatus.textContent = `You're on the computer running this server, so whenever Instagram demands a login the app uses the Instagram session from your own browser (${browsers}…) automatically — nothing to paste. Only fill the box below if that fails (e.g. Safari needs Full Disk Access to be readable).`;
+      summary.textContent = "Advanced · Instagram login (automatic from your browser)";
+    } else {
+      authStatus.className = "hint";
+      authStatus.textContent = "This server has no Instagram session configured. Paste a cookie below to download stories, private content, or anything Instagram hides from logged-out visitors.";
+      summary.textContent = "Advanced · Instagram login (needed for stories & most reels)";
+    }
     if (caps.allow_user_cookies === false) {
       cookiesInput.disabled = true;
       cookiesInput.placeholder = "User-supplied cookies are disabled on this server.";
@@ -196,6 +219,7 @@
       chipsEl.appendChild(chip("target", `${job.plan.target_width}×${job.plan.target_height} @ ${fmtFps(job.plan.target_fps)} fps`));
       if (job.engine) chipsEl.appendChild(chip("engine", job.engine));
     }
+    if (job.auth) chipsEl.appendChild(chip("login", job.auth));
 
     errorEl.classList.toggle("hidden", !job.error);
     errorEl.textContent = job.error || "";
@@ -315,10 +339,9 @@
     poll();
   };
 
-  form.addEventListener("submit", (event) => {
-    event.preventDefault();
+  const submitCurrent = () => {
     const url = urlInput.value.trim();
-    if (!url) return;
+    if (!url || submit.disabled) return;
     saveOptions();
     persistCookies();
     const payload = {
@@ -331,7 +354,29 @@
     const cookies = cookiesInput.value.trim();
     if (cookies) payload.cookies = cookies;
     startJob(payload);
+  };
+
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    submitCurrent();
   });
+
+  // Paste-to-go: an Instagram link pasted anywhere (except into another field) starts the job.
+  const handlePaste = (event) => {
+    const target = event.target;
+    const isOtherField = target && target !== urlInput &&
+      (target.tagName === "TEXTAREA" || target.tagName === "INPUT" || target.isContentEditable);
+    if (isOtherField) return;
+    const text = event.clipboardData ? event.clipboardData.getData("text") : "";
+    const url = extractUrl(text);
+    if (!url) return;
+    event.preventDefault();
+    urlInput.value = url;
+    urlInput.focus();
+    syncUrlHint();
+    submitCurrent();
+  };
+  document.addEventListener("paste", handlePaste);
 
   cancelBtn.addEventListener("click", async () => {
     if (!currentJob) return;
@@ -344,8 +389,6 @@
   urlInput.addEventListener("input", syncUrlHint);
   cookiesInput.addEventListener("input", syncUrlHint);
   rememberCookies.addEventListener("change", persistCookies);
-
-  urlInput.addEventListener("paste", () => setTimeout(syncUrlHint, 0));
 
   // ------------------------------------------------------------------ boot
 

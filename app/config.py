@@ -11,6 +11,16 @@ from dataclasses import dataclass
 from pathlib import Path
 
 DEFAULT_ALLOWED_DOMAINS = ("instagram.com", "instagr.am", "ig.me")
+DEFAULT_BROWSER_ORDER = (
+    "safari",
+    "chrome",
+    "firefox",
+    "edge",
+    "brave",
+    "chromium",
+    "vivaldi",
+    "opera",
+)
 
 SOFTWARE_ENCODERS = ("libx264", "libx265")
 HARDWARE_ENCODERS = (
@@ -82,6 +92,10 @@ class Settings:
     ig_cookies_file: Path | None = None
     ig_cookies_from_browser: str | None = None
     allow_user_cookies: bool = True
+    # local = use the operator's own browser login for requests from this machine,
+    # always = for every request (single-user deployments only), off = never
+    auto_browser_cookies: str = "local"
+    browser_cookie_order: tuple[str, ...] = DEFAULT_BROWSER_ORDER
 
     # ffmpeg
     ffmpeg_bin: str = "ffmpeg"
@@ -128,6 +142,15 @@ class Settings:
         frame_format = (_str("AI_FRAME_FORMAT", "png") or "png").lower()
         if frame_format not in {"png", "webp", "jpg"}:
             raise ValueError("AI_FRAME_FORMAT must be png, webp or jpg")
+        auto_browser = (_str("AUTO_BROWSER_COOKIES", "local") or "local").lower()
+        if auto_browser not in {"local", "always", "off"}:
+            raise ValueError("AUTO_BROWSER_COOKIES must be local, always or off")
+        browser_order_raw = _str("BROWSER_COOKIE_ORDER")
+        browser_order = (
+            tuple(b.strip().lower() for b in browser_order_raw.split(",") if b.strip())
+            if browser_order_raw
+            else DEFAULT_BROWSER_ORDER
+        )
 
         return cls(
             host=_str("HOST", "0.0.0.0") or "0.0.0.0",
@@ -144,6 +167,8 @@ class Settings:
             ig_cookies_file=_path("IG_COOKIES_FILE"),
             ig_cookies_from_browser=_str("IG_COOKIES_FROM_BROWSER"),
             allow_user_cookies=_bool("ALLOW_USER_COOKIES", True),
+            auto_browser_cookies=auto_browser,
+            browser_cookie_order=browser_order,
             ffmpeg_bin=_str("FFMPEG_BIN", "ffmpeg") or "ffmpeg",
             ffprobe_bin=_str("FFPROBE_BIN", "ffprobe") or "ffprobe",
             video_encoder=encoder,

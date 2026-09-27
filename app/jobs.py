@@ -14,7 +14,7 @@ from enum import StrEnum
 from pathlib import Path
 
 from .config import Settings
-from .cookies import CookieError, resolve_cookie_source
+from .cookies import CookieError, CookieSource, discover_browser_session, resolve_cookie_source
 from .enhance_ai import AIEngineError, enhance_with_ncnn, enhance_with_video2x, select_ai_engine
 from .enhance_ffmpeg import enhance_with_ffmpeg
 from .extractor import DownloadedItem, ExtractError, download
@@ -113,11 +113,13 @@ class Job:
     options: JobOptions
     client_ip: str
     dir: Path
+    client_is_local: bool = False
     cancel: CancelToken = field(default_factory=CancelToken)
     status: JobStatus = JobStatus.QUEUED
     stage: str = "Queued"
     progress: float = 0.0
     error: str | None = None
+    auth: str | None = None
     sources: list[dict] = field(default_factory=list)
     plan: dict | None = None
     engine: str | None = None
@@ -164,6 +166,7 @@ class Job:
             "stage": self.stage,
             "progress": round(self.progress, 4),
             "error": self.error,
+            "auth": self.auth,
             "sources": self.sources,
             "plan": self.plan,
             "engine": self.engine,
@@ -241,7 +244,9 @@ class JobManager:
         except KeyError as exc:
             raise JobNotFound(job_id) from exc
 
-    def create(self, url: str, options: JobOptions, client_ip: str) -> Job:
+    def create(
+        self, url: str, options: JobOptions, client_ip: str, *, client_is_local: bool = False
+    ) -> Job:
         options.validate()
         target = normalize_instagram_url(url, self.settings.allowed_domains)
         # Validate pasted cookies now so the user gets immediate feedback.
@@ -264,6 +269,7 @@ class JobManager:
             options=options,
             client_ip=client_ip,
             dir=self.settings.jobs_dir / job_id,
+            client_is_local=client_is_local,
         )
         job.dir.mkdir(parents=True, exist_ok=True)
         self.jobs[job_id] = job
@@ -314,20 +320,70 @@ class JobManager:
                 for stray in job.dir.glob("*.part"):
                     stray.unlink(missing_ok=True)
 
-    async def _execute(self, job: Job) -> None:
+    def _browser_login_allowed(self, job: Job) -> bool:
+        mode = self.settings.auto_browser_cookies
+        return mode == "always" or (mode == "local" and job.client_is_local)
+
+    async def _browser_login(self, job: Job) -> tuple[CookieSource | None, str]:
+        result = await asyncio.to_thread(discover_browser_session, self.settings)
+        source = result.session.as_source() if result.session else None
+        return source, result.summary()
+
+    async def _fetch(self, job: Job) -> tuple[object, CookieSource]:
+        """Download with the configured credentials, falling back to the operator's own browser
+        login (same-machine requests only) when Instagram insists on a login."""
         settings = self.settings
-        job.set_stage(JobStatus.DOWNLOADING, "Contacting Instagram…", 0.0)
         cookie_source = resolve_cookie_source(settings, job.options.cookies)
         job.options.cookies = None
+        browser_allowed = self._browser_login_allowed(job)
+
+        if cookie_source.kind == "none" and browser_allowed and job.target.requires_login:
+            # Stories never work anonymously: skip straight to the browser session.
+            job.set_progress(0.0, "Looking for your browser's Instagram login…")
+            browser_source, _ = await self._browser_login(job)
+            cookie_source = browser_source or cookie_source
 
         loop = asyncio.get_running_loop()
 
         def report_download(fraction: float, label: str) -> None:
             loop.call_soon_threadsafe(job.set_progress, fraction, label)
 
-        result = await asyncio.to_thread(
-            download, job.target, job.dir, settings, cookie_source, job.cancel, report_download
-        )
+        job.set_progress(0.0, f"Contacting Instagram ({cookie_source.describe()})…")
+        try:
+            result = await asyncio.to_thread(
+                download, job.target, job.dir, settings, cookie_source, job.cancel, report_download
+            )
+            return result, cookie_source
+        except ExtractError as exc:
+            if not (exc.login_required and cookie_source.kind == "none" and browser_allowed):
+                raise
+            job.set_progress(0.0, "Instagram wants a login — checking your browsers…")
+            browser_source, summary = await self._browser_login(job)
+            if browser_source is None:
+                raise ExtractError(
+                    "Instagram only shows this to logged-in users, and no Instagram login was "
+                    f"found in your browsers ({summary}). Log in to instagram.com in one of them "
+                    "and try again — the app picks the login up automatically — or paste a "
+                    "sessionid under Advanced.",
+                    "login",
+                ) from exc
+            job.set_progress(0.0, f"Retrying with {browser_source.describe()}…")
+            result = await asyncio.to_thread(
+                download,
+                job.target,
+                job.dir,
+                settings,
+                browser_source,
+                job.cancel,
+                report_download,
+            )
+            return result, browser_source
+
+    async def _execute(self, job: Job) -> None:
+        settings = self.settings
+        job.set_stage(JobStatus.DOWNLOADING, "Contacting Instagram…", 0.0)
+        result, cookie_source = await self._fetch(job)
+        job.auth = cookie_source.describe()
         job.cancel.check()
         job.set_progress(1.0, "Download complete")
 

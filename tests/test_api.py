@@ -73,6 +73,13 @@ def test_capabilities(client):
     assert caps["ffmpeg"]["encoder"] == "libx264"
     assert caps["ai"]["available"] is False
     assert caps["stories_auth_configured"] is False
+    # TestClient connects from "testclient", which is not a loopback address.
+    assert caps["browser_login"] == {
+        "mode": "local",
+        "active_for_you": False,
+        "browsers": list(caps["browser_login"]["browsers"]),
+    }
+    assert "safari" in caps["browser_login"]["browsers"]
     assert caps["limits"]["max_duration_seconds"] == 600
     assert caps["yt_dlp_version"]
 

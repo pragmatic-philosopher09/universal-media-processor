@@ -45,7 +45,15 @@ _EFG_RESOLUTION_RE = re.compile(r"\.(\d{3,4})\.")
 
 
 class ExtractError(RuntimeError):
-    """User-facing extraction failure."""
+    """User-facing extraction failure; `kind` lets callers react (e.g. retry with a login)."""
+
+    def __init__(self, message: str, kind: str = "other") -> None:
+        super().__init__(message)
+        self.kind = kind
+
+    @property
+    def login_required(self) -> bool:
+        return self.kind == "login"
 
 
 def resolution_hint_from_url(url: str | None) -> int | None:
@@ -257,25 +265,17 @@ def _to_item(entry: dict[str, Any], path: Path) -> DownloadedItem:
     )
 
 
-def friendly_error(message: str, requires_login: bool, authenticated: bool) -> str:
+def classify_error(message: str) -> tuple[str, str]:
+    """Map a raw yt-dlp error to (kind, cleaned text)."""
     text = re.sub(r"^ERROR:\s*", "", message.strip())
     text = re.sub(r"^\[[^\]]+\]\s*(?:[\w-]+:\s*)?", "", text)
     lower = text.lower()
     if "log in" in lower or "login" in lower or "cookies" in lower or "checkpoint" in lower:
-        if authenticated:
-            return (
-                "Instagram rejected the session cookie (expired, or the account was challenged). "
-                "Log in to instagram.com again and paste a fresh sessionid."
-            )
-        hint = "Stories" if requires_login else "This content"
-        return (
-            f"{hint} can only be fetched while logged in. Paste an Instagram sessionid cookie "
-            "under Advanced, or configure IG_SESSIONID on the server."
-        )
+        return "login", text
     if ("rate" in lower and "limit" in lower) or "429" in lower or "too many requests" in lower:
-        return "Instagram is rate-limiting this server. Wait a few minutes and try again."
+        return "rate_limit", text
     if "private" in lower:
-        return "This account is private. Use a session cookie for an account that follows it."
+        return "private", text
     if any(
         word in lower
         for word in (
@@ -287,14 +287,49 @@ def friendly_error(message: str, requires_login: bool, authenticated: bool) -> s
             "does not exist",
         )
     ):
-        return "Instagram says this media is unavailable (deleted, private or a broken link)."
+        return "unavailable", text
     if "unsupported url" in lower:
-        return "That Instagram URL type isn't supported yet."
+        return "unsupported", text
     if "no video" in lower or "no formats" in lower or "requested format" in lower:
-        return "No video was found at this link. Photo posts and photo stories aren't supported."
+        return "no_video", text
     if "unable to download webpage" in lower or "timed out" in lower:
+        return "network", text
+    return "other", text
+
+
+def friendly_error(message: str, requires_login: bool, authenticated: bool) -> str:
+    kind, text = classify_error(message)
+    if kind == "login":
+        if authenticated:
+            return (
+                "Instagram rejected the session cookie (expired, or the account was challenged). "
+                "Log in to instagram.com again and paste a fresh sessionid."
+            )
+        hint = "Stories" if requires_login else "This content"
+        return (
+            f"{hint} can only be fetched while logged in. Paste an Instagram sessionid cookie "
+            "under Advanced, or configure IG_SESSIONID on the server."
+        )
+    if kind == "rate_limit":
+        return "Instagram is rate-limiting this server. Wait a few minutes and try again."
+    if kind == "private":
+        return "This account is private. Use a session cookie for an account that follows it."
+    if kind == "unavailable":
+        return "Instagram says this media is unavailable (deleted, private or a broken link)."
+    if kind == "unsupported":
+        return "That Instagram URL type isn't supported yet."
+    if kind == "no_video":
+        return "No video was found at this link. Photo posts and photo stories aren't supported."
+    if kind == "network":
         return "Couldn't reach Instagram. Check the server's network connection and try again."
     return f"Instagram download failed: {text[:300]}"
+
+
+def _extract_error(message: str, target: InstagramURL, cookie_source: CookieSource) -> ExtractError:
+    kind, _ = classify_error(message)
+    return ExtractError(
+        friendly_error(message, target.requires_login, cookie_source.authenticated), kind
+    )
 
 
 def download(
@@ -343,24 +378,14 @@ def download(
             info = ydl.extract_info(url, download=True)
     except DownloadCancelled as exc:
         raise JobCancelled() from exc
-    except (DownloadError, ExtractorError) as exc:
-        raise ExtractError(
-            friendly_error(str(exc), target.requires_login, cookie_source.authenticated)
-        ) from exc
-    except yt_dlp.utils.YoutubeDLError as exc:
-        raise ExtractError(
-            friendly_error(str(exc), target.requires_login, cookie_source.authenticated)
-        ) from exc
+    except (DownloadError, ExtractorError, yt_dlp.utils.YoutubeDLError) as exc:
+        raise _extract_error(str(exc), target, cookie_source) from exc
 
     if cancel.cancelled:
         raise JobCancelled()
     if not info:
         message = next((m for m in reversed(logger.messages) if "ERROR" in m), None)
-        raise ExtractError(
-            friendly_error(
-                message or "no media returned", target.requires_login, cookie_source.authenticated
-            )
-        )
+        raise _extract_error(message or "no media returned", target, cookie_source)
 
     items: list[DownloadedItem] = []
     for entry in _entries(info):
@@ -372,10 +397,10 @@ def download(
     if not items:
         message = next((m for m in reversed(logger.messages) if "ERROR" in m), None)
         if message:
-            raise ExtractError(
-                friendly_error(message, target.requires_login, cookie_source.authenticated)
-            )
-        raise ExtractError("No downloadable video found at this link (photo-only content?).")
+            raise _extract_error(message, target, cookie_source)
+        raise ExtractError(
+            "No downloadable video found at this link (photo-only content?).", "no_video"
+        )
 
     return ExtractResult(
         items=items,

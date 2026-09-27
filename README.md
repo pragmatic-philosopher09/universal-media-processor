@@ -2,9 +2,12 @@
 
 A free, self-hostable web app that downloads Instagram **reels, posts and stories** in the
 highest quality Instagram actually serves, and optionally **enhances them to 4K (2160p) at
-60 fps** with motion-compensated frame interpolation and high-quality upscaling — either with
-plain ffmpeg (runs anywhere) or with AI models (RIFE + Real-ESRGAN) when their binaries are
-installed.
+60 fps** with motion-compensated frame interpolation and high-quality upscaling. Paste a link
+anywhere on the page and it starts.
+
+The default enhancement engine is **classical signal processing in ffmpeg — not AI**. An
+optional, *experimental and unverified* AI engine (RIFE + Real-ESRGAN neural networks) is wired
+in for people who install those binaries; see [Is any of this AI?](#is-any-of-this-ai).
 
 ## The honest part first: Instagram does not serve 4K
 
@@ -28,13 +31,17 @@ What this app does instead:
 
 ## Features
 
+- Paste-to-go: an Instagram link pasted anywhere on the page (even inside share-sheet text)
+  starts the job immediately
 - Reels, posts (incl. carousels), IGTV, stories, highlights and `/share/` links
 - Best-rendition selection (yt-dlp with a custom format selector)
 - Enhancement presets: resolution *original / 1440p / 4K*, frame rate *original / 60*
-- Engines: **ffmpeg** (`minterpolate` + Lanczos + CAS) or **AI** (`rife-ncnn-vulkan` +
-  `realesrgan-ncnn-vulkan`, or `video2x`) when found on the server
+- Engines: **ffmpeg** (`minterpolate` + Lanczos + CAS) by default; **AI** (`rife-ncnn-vulkan` +
+  `realesrgan-ncnn-vulkan`, or `video2x`) if you install the binaries — experimental
 - Hardware encoding auto-detected (VideoToolbox / NVENC / QSV), libx264 fallback
-- Stories with zero end-user friction: server-side Instagram session, or a per-request cookie
+- Logins without copying cookies: on your own machine the app reuses your browser's Instagram
+  session automatically when Instagram demands one; servers can hold a session in env vars;
+  users can still paste a cookie
 - Progress reporting, cancellation, per-IP limits, automatic file expiry
 - No database, no build step: FastAPI + vanilla JS
 
@@ -60,21 +67,62 @@ docker build -t reel-downloader . && docker run -p 8000:8000 -v reel-data:/data 
 
 Instagram changes often; if downloads start failing, rebuild the image / `pip install -U yt-dlp`.
 
-## Stories and private accounts
+## Logins: stories, private accounts — and most reels
 
-Instagram only shows stories to logged-in accounts. The app resolves credentials in this order:
+Instagram now login-walls almost everything for anonymous visitors (the API replies "not
+granting access", GraphQL returns empty, even the embed page is a login shell). Stories always
+need a login; ordinary reels usually do too unless Meta has whitelisted the account. The app
+therefore tries anonymously first and, when Instagram insists, uses the first credential it can
+find:
 
 | Priority | Source | Friction |
 |---|---|---|
 | 1 | Cookie pasted in the UI (**Advanced** panel) — a bare `sessionid`, a full `Cookie:` header, or a `cookies.txt` export | end user pastes once (optionally remembered in *their* browser) |
-| 2 | `IG_SESSIONID` / `IG_COOKIES` / `IG_COOKIES_FILE` on the server | zero — set once by the operator |
-| 3 | `IG_COOKIES_FROM_BROWSER=safari` (or `chrome`, `firefox`, …) | zero — reads your local browser session (great for running it on your own machine) |
+| 2 | `IG_SESSIONID` / `IG_COOKIES` / `IG_COOKIES_FILE` / `IG_COOKIES_FROM_BROWSER` on the server | zero — set once by the operator |
+| 3 | **Automatic browser login** (`AUTO_BROWSER_COOKIES=local`, the default): for requests coming from the same machine as the server, the Instagram session of a locally installed browser is read via yt-dlp | zero — just be logged in to instagram.com in your browser |
 
-Pasted cookies are attached to an in-memory cookie jar for that job only and never written to
-disk or logs. Use a throwaway account for a public server: Instagram may challenge accounts
-that fetch a lot.
+How the automatic browser login behaves:
 
-## AI mode (optional, slower, best-looking)
+- Only the browser's **default profile** is read (`BROWSER_COOKIE_ORDER=safari,chrome,firefox,…`).
+  Name a profile to use another one, e.g. `BROWSER_COOKIE_ORDER="chrome:Profile 3,chrome"` —
+  the app never scans every profile, because on a shared computer that could pick up someone
+  else's account.
+- macOS: Safari's cookie file is only readable if the terminal has **Full Disk Access**; Chrome
+  and Brave trigger a one-time Keychain prompt ("Chrome Safe Storage" → *Always Allow*). The
+  first lookup can take ~20 s while Chrome's cookie store is decrypted; results are cached.
+- Requests that arrive through a proxy (`X-Forwarded-For` present) are never treated as local,
+  so remote users cannot borrow the operator's login. `AUTO_BROWSER_COOKIES=always` disables that
+  protection — only for a single-user box. `off` disables the feature.
+- When nothing is found, the error says exactly what was checked, e.g. *"Chrome: not logged in
+  to Instagram; Safari: no permission to read its cookies"*.
+
+The status card shows which login was used (*anonymous*, *your Chrome login*, …). Pasted and
+discovered cookies live in an in-memory cookie jar for that job only and are never written to
+disk or logs. Use a throwaway account on a public server: Instagram may challenge accounts that
+fetch a lot.
+
+## Is any of this AI?
+
+Out of the box: **no**. The default engine is deterministic signal processing inside ffmpeg:
+
+| Step | What it actually is |
+|---|---|
+| Frame interpolation (`minterpolate`) | block-matching motion estimation + motion-compensated blending — codec-style math, no learned model |
+| Upscaling (`scale=…:flags=lanczos`) | a fixed resampling kernel |
+| Sharpening (`cas`) | AMD's contrast-adaptive sharpening formula |
+
+It yields a smooth, natural 4K60 rendition but cannot invent detail that was never in the
+1080p source. Best-rendition selection, error handling and cookie discovery are plain
+heuristics too.
+
+The **AI engine** does use neural networks — RIFE (learned optical-flow interpolation) and
+Real-ESRGAN (GAN super-resolution that reconstructs plausible texture) — but only when you
+install their binaries. It is **experimental and unverified**: the pipeline has been exercised
+against stub programs that reproduce the documented CLI behaviour of `rife-ncnn-vulkan` and
+`realesrgan-ncnn-vulkan`, not against the real models on real hardware. Expect to tune models,
+tile sizes and GPU settings yourself.
+
+## AI mode (optional, experimental)
 
 Install any of the following and the *Auto* engine will use them:
 
@@ -131,7 +179,9 @@ commented list. The important ones:
 | `X264_PRESET` / `X264_CRF` | `medium` / `18` | software-encoder quality |
 | `SHARPEN` | `0.3` | CAS strength after upscaling, `0` disables |
 | `FFMPEG_INTERP_QUALITY` | `high` | `fast` is ~2× quicker with slightly more ghosting |
-| `IG_SESSIONID` etc. | — | Instagram login for stories (see above) |
+| `IG_SESSIONID` etc. | — | Instagram login configured on the server (see above) |
+| `AUTO_BROWSER_COOKIES` | `local` | reuse a local browser's Instagram login for same-machine requests (`always`, `off`) |
+| `BROWSER_COOKIE_ORDER` | `safari,chrome,…` | browsers/profiles to check, yt-dlp `BROWSER[:PROFILE]` syntax |
 | `AI_ENGINE` | `auto` | `ncnn`, `video2x`, or `off` |
 | `AI_UPSCALE_MODEL` | `realesrgan-x4plus` | `realesr-animevideov3` is much faster |
 | `AI_CHUNK_FRAMES` | `32` | frames per AI batch (disk vs. model-reload trade-off) |
@@ -140,7 +190,7 @@ commented list. The important ones:
 
 | Method | Path | Notes |
 |---|---|---|
-| `GET` | `/api/capabilities` | encoder, AI availability, auth status, limits |
+| `GET` | `/api/capabilities` | encoder, AI availability, auth status (incl. whether browser login applies to you), limits |
 | `POST` | `/api/jobs` | `{"url", "mode": "enhance"\|"original", "resolution": "2160p"\|"1440p"\|"original", "fps": "60"\|"original", "engine": "auto"\|"ffmpeg"\|"ai", "cookies"?}` → `202` job |
 | `GET` | `/api/jobs/{id}` | status, stage, progress, sources, plan, outputs, warnings |
 | `DELETE` | `/api/jobs/{id}` | cancel a running job or delete a finished one |
@@ -165,14 +215,16 @@ ruff check . && ruff format .
 ```
 
 The AI pipeline is exercised with stub binaries that reproduce the documented CLI semantics of
-`rife-ncnn-vulkan` and `realesrgan-ncnn-vulkan`; treat the AI and video2x engines as
-experimental until you have run them against the real binaries on your hardware.
+`rife-ncnn-vulkan` and `realesrgan-ncnn-vulkan`; the AI and video2x engines remain unverified
+until someone runs them against the real binaries on real hardware.
 
 ## Limitations
 
 - Photo posts / photo stories are skipped (video only).
-- Instagram rate-limits and login-walls anonymous traffic, especially from cloud IPs; a session
-  cookie fixes most "empty media response" errors.
+- Instagram rate-limits and login-walls anonymous traffic, especially from cloud IPs; a login
+  (browser session or pasted cookie) fixes most "empty media response" errors.
+- The automatic browser login needs a browser on the *server's* machine, so it only helps when
+  you run the app locally.
 - Upscaling cannot invent true detail — the result is a clean, natural-looking 4K60 rendition of
   a 1080p30 source, not the creator's camera original.
 

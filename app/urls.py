@@ -34,6 +34,21 @@ _KIND_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
 )
 
 
+_URL_IN_TEXT_RE = re.compile(
+    r"(?:https?://)?(?:[\w-]+\.)*(?:instagram\.com|instagr\.am|ig\.me)/\S+", re.I
+)
+
+
+def extract_url(text: str) -> str:
+    """Return the Instagram URL inside pasted text (share sheets often add a caption)."""
+    text = text.strip()
+    trailing = ".,;:!?)\"'"
+    if " " not in text and "\n" not in text:
+        return text.rstrip(trailing)
+    match = _URL_IN_TEXT_RE.search(text)
+    return match.group(0).rstrip(trailing) if match else text
+
+
 def _host_allowed(host: str, allowed: Iterable[str]) -> bool:
     for domain in allowed:
         domain = domain.lower().lstrip(".")
@@ -46,7 +61,7 @@ def normalize_instagram_url(raw: str, allowed_domains: Iterable[str]) -> Instagr
     """Validate `raw`, strip tracking noise and classify the media type."""
     if not raw or not raw.strip():
         raise InvalidURL("Please paste an Instagram link.")
-    candidate = raw.strip()
+    candidate = extract_url(raw)
     if "://" not in candidate:
         candidate = "https://" + candidate
 

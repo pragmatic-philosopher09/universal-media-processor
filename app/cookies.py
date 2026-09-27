@@ -13,12 +13,18 @@ Pasted cookies are only ever kept in memory and attached to a per-job cookie jar
 from __future__ import annotations
 
 import http.cookiejar
+import logging
 import re
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from yt_dlp.cookies import SUPPORTED_BROWSERS, YDLLogger, extract_cookies_from_browser
+
 from .config import Settings
+
+log = logging.getLogger(__name__)
 
 INSTAGRAM_COOKIE_DOMAIN = ".instagram.com"
 RELEVANT_COOKIES = {"sessionid", "ds_user_id", "csrftoken", "mid", "ig_did", "rur", "datr"}
@@ -30,22 +36,27 @@ class CookieError(ValueError):
 
 @dataclass(frozen=True)
 class CookieSource:
-    kind: str  # none | request | env | file | browser
+    kind: str  # none | request | env | file | browser | browser-auto
     cookies: dict[str, str] = field(default_factory=dict)
     cookie_file: Path | None = None
     browser_spec: tuple[str, ...] | None = None
+    browser_name: str | None = None
 
     @property
     def authenticated(self) -> bool:
         return self.kind != "none"
 
     def describe(self) -> str:
+        if self.kind in {"browser", "browser-auto"} and self.browser_name:
+            name = self.browser_name[:1].upper() + self.browser_name[1:]
+            return f"your {name} login"
         return {
             "none": "anonymous",
-            "request": "cookie supplied with the request",
+            "request": "cookie you pasted",
             "env": "server-configured session",
             "file": "server cookies file",
             "browser": "local browser session",
+            "browser-auto": "your browser login",
         }[self.kind]
 
 
@@ -129,10 +140,134 @@ def resolve_cookie_source(settings: Settings, request_cookie_text: str | None) -
     if settings.ig_cookies_file:
         return CookieSource(kind="file", cookie_file=settings.ig_cookies_file)
     if settings.ig_cookies_from_browser:
-        return CookieSource(
-            kind="browser", browser_spec=parse_browser_spec(settings.ig_cookies_from_browser)
-        )
+        spec = parse_browser_spec(settings.ig_cookies_from_browser)
+        return CookieSource(kind="browser", browser_spec=spec, browser_name=spec[0])
     return CookieSource(kind="none")
+
+
+# --------------------------------------------------------------------------- browser discovery
+
+
+@dataclass(frozen=True)
+class BrowserSession:
+    browser: str
+    cookies: dict[str, str]
+    profile: str | None = None
+
+    @property
+    def label(self) -> str:
+        name = self.browser.capitalize()
+        return f"{name} ({self.profile})" if self.profile else name
+
+    def as_source(self) -> CookieSource:
+        return CookieSource(kind="browser-auto", cookies=self.cookies, browser_name=self.label)
+
+
+@dataclass(frozen=True)
+class DiscoveryResult:
+    session: BrowserSession | None
+    attempts: tuple[tuple[str, str], ...]  # (browser label, outcome)
+
+    def summary(self) -> str:
+        return (
+            "; ".join(f"{label}: {outcome}" for label, outcome in self.attempts)
+            or "no browsers checked"
+        )
+
+
+OUTCOME_TEXT = {
+    "ok": "logged in",
+    "not-logged-in": "not logged in to Instagram",
+    "no-cookies": "no Instagram cookies",
+    "not-installed": "not installed",
+    "no-permission": "no permission to read its cookies (grant Full Disk Access)",
+    "error": "could not read cookies",
+}
+
+# Successful lookups are reused for a while; failures are retried after a shorter pause so a
+# user who logs in to Instagram in their browser does not have to restart the server.
+_DISCOVERY_TTL_OK = 600.0
+_DISCOVERY_TTL_MISS = 45.0
+_discovery_cache: dict[tuple[str, ...], tuple[float, DiscoveryResult]] = {}
+
+
+def _instagram_cookies(jar: http.cookiejar.CookieJar) -> dict[str, str]:
+    cookies: dict[str, str] = {}
+    for cookie in jar:
+        domain = (cookie.domain or "").lstrip(".").lower()
+        if domain == "instagram.com" or domain.endswith(".instagram.com"):
+            if cookie.name in RELEVANT_COOKIES and cookie.value:
+                cookies[cookie.name] = cookie.value
+    return cookies
+
+
+def _classify_failure(exc: Exception) -> str:
+    text = str(exc).lower()
+    if isinstance(exc, PermissionError) or "not permitted" in text or "permission" in text:
+        return "no-permission"
+    if isinstance(exc, FileNotFoundError) or "could not find" in text or "no such file" in text:
+        return "not-installed"
+    return "error"
+
+
+def _read_browser(entry: str) -> tuple[str, str | None, dict[str, str] | None, str]:
+    """Return (browser, profile, instagram cookies or None, outcome) for one order entry."""
+    spec = parse_browser_spec(entry)
+    browser = spec[0]
+    profile = spec[1] if len(spec) > 1 else None
+    keyring = spec[2] if len(spec) > 2 else None
+    container = spec[3] if len(spec) > 3 else None
+    if browser not in SUPPORTED_BROWSERS:
+        return browser, profile, None, "error"
+    try:
+        jar = extract_cookies_from_browser(
+            browser, profile, YDLLogger(), keyring=keyring, container=container
+        )
+    except Exception as exc:  # noqa: BLE001 - any failure just means "not this browser"
+        outcome = _classify_failure(exc)
+        log.info("no usable %s cookies (%s): %s", entry, outcome, str(exc).splitlines()[0][:160])
+        return browser, profile, None, outcome
+    cookies = _instagram_cookies(jar)
+    if cookies.get("sessionid"):
+        return browser, profile, cookies, "ok"
+    return browser, profile, None, "not-logged-in" if cookies else "no-cookies"
+
+
+def discover_browser_session(
+    settings: Settings, *, now: float | None = None, use_cache: bool = True
+) -> DiscoveryResult:
+    """Find a logged-in instagram.com session in a locally installed browser (blocking).
+
+    Entries in `settings.browser_cookie_order` use yt-dlp's `BROWSER[+KEYRING][:PROFILE]`
+    syntax, e.g. `chrome` (default profile) or `chrome:Profile 3`. Browsers that are missing,
+    locked or unreadable (Safari needs Full Disk Access, Chrome asks the Keychain once) are
+    reported in the result instead of raising.
+    """
+    now = time.time() if now is None else now
+    key = tuple(settings.browser_cookie_order)
+    cached = _discovery_cache.get(key) if use_cache else None
+    if cached:
+        stamp, result = cached
+        if now - stamp < (_DISCOVERY_TTL_OK if result.session else _DISCOVERY_TTL_MISS):
+            return result
+
+    attempts: list[tuple[str, str]] = []
+    session: BrowserSession | None = None
+    for entry in key:
+        browser, profile, cookies, outcome = _read_browser(entry)
+        label = f"{browser.capitalize()} ({profile})" if profile else browser.capitalize()
+        attempts.append((label, OUTCOME_TEXT.get(outcome, outcome)))
+        if cookies:
+            log.info("using Instagram session from %s", label)
+            session = BrowserSession(browser=browser, cookies=cookies, profile=profile)
+            break
+    result = DiscoveryResult(session=session, attempts=tuple(attempts))
+    _discovery_cache[key] = (now, result)
+    return result
+
+
+def clear_discovery_cache() -> None:
+    _discovery_cache.clear()
 
 
 def apply_cookie_source_to_opts(opts: dict[str, Any], source: CookieSource) -> None:
