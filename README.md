@@ -109,11 +109,12 @@ a Docker Space as-is (`huggingface-cli repo create <name> --type space --space_s
 `INSTAGRAM_COOKIES` in Secrets. Enhancement on 2 vCPU is slow: use `X264_PRESET=veryfast`,
 `FFMPEG_INTERP_QUALITY=fast`, `MAX_DURATION_SECONDS=120`.
 
-### A real server (Oracle Cloud Always Free, any VPS)
+### A real server — Oracle Cloud Always Free or any VPS (full 4K60)
 
-For actual 4K60 enhancement use a machine with real cores: `docker compose up -d --build`
-behind Caddy or nginx for HTTPS, `AUTO_BROWSER_COOKIES=off`, and `INSTAGRAM_COOKIES` for a
-throwaway account.
+See [`deploy/oracle/README.md`](deploy/oracle/README.md): one command installs Docker, opens the
+firewall, and starts the app behind Caddy with automatic HTTPS (free `*.sslip.io` hostname or
+your own domain). Oracle's Always Free ARM VM (4 cores / 24 GB) runs enhancement at roughly
+real time.
 
 ## Logins: stories, private accounts — and most reels
 

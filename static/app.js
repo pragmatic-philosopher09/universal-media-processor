@@ -179,7 +179,11 @@
       const enhanceRadio = form.querySelector('input[name="mode"][value="enhance"]');
       enhanceRadio.disabled = true;
       enhanceRadio.parentElement.title = caps.enhancement.reason || "Enhancement is disabled on this server.";
-      enhanceRadio.parentElement.querySelector("span").textContent = "Enhance → 4K 60 fps (off on this server)";
+      const note = document.createElement("span");
+      note.className = "hint";
+      note.textContent = "This server only downloads — it doesn't have the CPU for 4K 60 fps rendering. Run the app locally or on a real VM for Enhance mode.";
+      enhanceOptions.parentNode.insertBefore(note, enhanceOptions);
+      enhanceRadio.parentElement.querySelector("span").textContent = "Enhance to 4K 60 fps — off on this server";
       form.elements.mode.value = "original";
       syncModeUI();
       enhanceOptions.classList.add("hidden");
@@ -190,9 +194,9 @@
       aiOption.disabled = true;
       aiOption.textContent = "AI · not installed on this server";
       if (engineSelect.value === "ai") engineSelect.value = "auto";
-      engineHint.textContent = "Auto uses the ffmpeg engine here — classical interpolation and scaling, no neural networks (RIFE/Real-ESRGAN binaries not found).";
+      engineHint.textContent = "ffmpeg on this server — AI binaries not installed.";
     } else {
-      engineHint.textContent = `AI: ${ai.upscale_model} + ${ai.interpolation_model} neural networks. Much slower, experimental and unverified on this hardware.`;
+      engineHint.textContent = `AI available: ${ai.upscale_model} + ${ai.interpolation_model}. Slow, experimental.`;
     }
     const summary = $("#advanced-summary");
     if (caps.stories_auth_configured) {

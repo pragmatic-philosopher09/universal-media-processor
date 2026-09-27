@@ -6,26 +6,24 @@
   <title>Media Downloader · Instagram, YouTube, TikTok, DeviantArt · best quality + 4K 60 fps enhancement</title>
   <meta name="description" content="Download Instagram reels & stories, YouTube videos, TikToks and DeviantArt art in the best quality served, then optionally enhance them to 4K 60 fps." />
   <link rel="stylesheet" href="/style.css" />
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23111827'/%3E%3Cpath d='M22 18l24 14-24 14z' fill='%23a78bfa'/%3E%3C/svg%3E" />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%23141414'/%3E%3Cpath d='M20 32h24M32 20v24' stroke='%23fff' stroke-width='5' stroke-linecap='round'/%3E%3C/svg%3E" />
 </head>
 <body>
   <main class="shell">
     <header class="hero">
       <div class="brand">
-        <span class="logo" aria-hidden="true">▶</span>
         <h1>Media Downloader</h1>
       </div>
       <p class="tagline">
-        <strong>Instagram</strong> reels, posts &amp; stories · <strong>YouTube</strong> videos &amp; Shorts ·
-        <strong>TikTok</strong> · <strong>DeviantArt</strong> art &amp; films — always the
-        <strong>highest rendition the platform actually serves</strong>, optionally upscaled to
-        <strong>4K</strong> and interpolated to <strong>60 fps</strong> on this server.
+        Save Instagram reels and stories, YouTube videos, TikToks and DeviantArt pieces in the
+        <strong>best quality the platform serves</strong> — and, where the server allows it, render a
+        <strong>4K 60 fps</strong> version.
       </p>
     </header>
 
     <form id="job-form" class="card" autocomplete="off">
       <label class="field">
-        <span class="field-label">Instagram link</span>
+        <span class="field-label">Link</span>
         <div class="url-row">
           <input id="url" name="url" type="text" inputmode="url" autocapitalize="off" required
                  placeholder="Paste an Instagram, YouTube, TikTok or DeviantArt link — it starts by itself" />
@@ -37,8 +35,8 @@
       <fieldset class="field">
         <legend class="field-label">Output</legend>
         <div class="segmented" role="radiogroup" aria-label="Output mode">
-          <label><input type="radio" name="mode" value="enhance" checked /><span>Enhance → 4K 60 fps</span></label>
-          <label><input type="radio" name="mode" value="original" /><span>Original (best available)</span></label>
+          <label><input type="radio" name="mode" value="enhance" checked /><span>Enhance to 4K 60 fps</span></label>
+          <label><input type="radio" name="mode" value="original" /><span>Original</span></label>
         </div>
       </fieldset>
 
@@ -46,7 +44,7 @@
         <label class="field compact">
           <span class="field-label">Resolution</span>
           <select name="resolution">
-            <option value="2160p" selected>4K (2160p short side)</option>
+            <option value="2160p" selected>4K (2160p)</option>
             <option value="1440p">1440p</option>
             <option value="original">Keep original</option>
           </select>
@@ -61,9 +59,9 @@
         <label class="field compact">
           <span class="field-label">Engine</span>
           <select name="engine">
-            <option value="auto" selected>Auto (AI if installed)</option>
-            <option value="ffmpeg">ffmpeg (classical, works everywhere)</option>
-            <option value="ai" id="engine-ai">AI · RIFE + Real-ESRGAN (experimental)</option>
+            <option value="auto" selected>Automatic</option>
+            <option value="ffmpeg">ffmpeg (classical)</option>
+            <option value="ai" id="engine-ai">AI — RIFE + Real-ESRGAN (experimental)</option>
           </select>
           <span id="engine-hint" class="hint"></span>
         </label>
@@ -110,7 +108,7 @@
 
     <footer class="foot">
       <details class="reality">
-        <summary>Why is the original “only” 1080p?</summary>
+        <summary>Why is the original “only” 1080p, and what does Enhance do?</summary>
         <p>
           Instagram and TikTok re-encode every upload and never deliver 4K: their CDNs top out at
           <strong>1080p, usually 30 fps</strong> (YouTube does serve 4K/8K natively when the creator uploaded it;
@@ -123,7 +121,7 @@
         </p>
       </details>
       <p id="caps" class="caps"></p>
-      <p class="legal">Only download content you own or have permission to use. This tool is for personal use and is not affiliated with Instagram.</p>
+      <p class="legal">Download only what you own or are permitted to use. Personal-use tool; not affiliated with Instagram, YouTube, TikTok or DeviantArt.</p>
     </footer>
   </main>
 

@@ -1,0 +1,15 @@
+{$DOMAIN} {
+	encode zstd gzip
+	# Large uploads aren't a thing here, but downloads can be big: don't buffer them.
+	reverse_proxy app:8000 {
+		flush_interval -1
+		transport http {
+			read_timeout 30m
+		}
+	}
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+	}
+}
