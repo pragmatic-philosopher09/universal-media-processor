@@ -102,6 +102,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 ),
             },
             "ai": ai_capabilities(settings),
+            "enhancement": {
+                "enabled": settings.enhancement_enabled,
+                "reason": None
+                if settings.enhancement_enabled
+                else "Enhancement is switched off on this server (not enough CPU); "
+                "originals download in the best quality the platform serves.",
+            },
             "platforms": [
                 {
                     "id": p.id,
@@ -126,6 +133,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.post("/api/jobs", status_code=202)
     async def create_job(payload: CreateJobRequest, request: Request) -> dict:
+        if payload.mode == "enhance" and not settings.enhancement_enabled:
+            raise HTTPException(
+                status_code=400,
+                detail="Enhancement is disabled on this server; choose 'Original (best available)'.",
+            )
         options = JobOptions(
             mode=payload.mode,
             resolution=payload.resolution,

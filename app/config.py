@@ -126,6 +126,7 @@ class Settings:
     job_ttl_minutes: int = 60
     max_concurrent_jobs: int = 2
     max_jobs_per_ip: int = 2
+    enhancement_enabled: bool = True
     max_duration_seconds: int = 600
     max_source_duration_seconds: int = 1800
     allowed_domains: tuple[str, ...] = DEFAULT_ALLOWED_DOMAINS
@@ -207,6 +208,7 @@ class Settings:
             job_ttl_minutes=_int("JOB_TTL_MINUTES", 60),
             max_concurrent_jobs=max(1, _int("MAX_CONCURRENT_JOBS", 2)),
             max_jobs_per_ip=max(1, _int("MAX_JOBS_PER_IP", 2)),
+            enhancement_enabled=_bool("ENHANCEMENT_ENABLED", True),
             max_duration_seconds=_int("MAX_DURATION_SECONDS", 600),
             max_source_duration_seconds=_int("MAX_SOURCE_DURATION_SECONDS", 1800),
             allowed_domains=domains,

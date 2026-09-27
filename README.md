@@ -91,30 +91,29 @@ docker build -t reel-downloader . && docker run -p 8000:8000 -v reel-data:/data 
 
 Instagram changes often; if downloads start failing, rebuild the image / `pip install -U yt-dlp`.
 
-### Hugging Face Spaces (free, Docker)
+### Render (free tier, downloads only)
 
-The repository doubles as a Space: the README front matter declares `sdk: docker` and
-`app_port: 8000`. Create a Docker Space and push this repo to it:
+[`render.yaml`](render.yaml) is a Render Blueprint. In the Render dashboard: **New → Blueprint**,
+connect this GitHub repository, pick the branch, deploy. The free instance (0.1 CPU / 512 MB)
+is fine for downloading but far too small for 4K60 enhancement, so the blueprint sets
+`ENHANCEMENT_ENABLED=false` — the UI then hides the Enhance option. Add
+`INSTAGRAM_COOKIES` (a throwaway account's `sessionid=…; ds_user_id=…; csrftoken=…`) as an
+environment variable in the dashboard, because Instagram login-walls datacenter IPs. Free
+services spin down after 15 idle minutes; the first request afterwards takes ~1 minute.
 
-```bash
-huggingface-cli login
-huggingface-cli repo create media-downloader --type space --space_sdk docker
-git remote add hf https://huggingface.co/spaces/<you>/media-downloader
-git push hf main
-```
+### Hugging Face Spaces (Docker; PRO subscription required for the CPU tier)
 
-Recommended Space **variables** (Settings → Variables) for the free 2-vCPU tier:
+The README front matter declares `sdk: docker` / `app_port: 8000`, so the repo can be pushed to
+a Docker Space as-is (`huggingface-cli repo create <name> --type space --space_sdk docker`, then
+`git push hf main`). Set the same variables as above via Settings → Variables and put
+`INSTAGRAM_COOKIES` in Secrets. Enhancement on 2 vCPU is slow: use `X264_PRESET=veryfast`,
+`FFMPEG_INTERP_QUALITY=fast`, `MAX_DURATION_SECONDS=120`.
 
-```
-AUTO_BROWSER_COOKIES=off   MAX_CONCURRENT_JOBS=1   MAX_DURATION_SECONDS=120
-X264_PRESET=veryfast       FFMPEG_INTERP_QUALITY=fast   JOB_TTL_MINUTES=30
-```
+### A real server (Oracle Cloud Always Free, any VPS)
 
-and, as **secrets**, `INSTAGRAM_COOKIES` (a throwaway account's `sessionid=…; ds_user_id=…;
-csrftoken=…`) because Instagram login-walls datacenter IPs; optionally `YOUTUBE_COOKIES` if
-YouTube starts asking the server to prove it is not a bot. The Space has no browser, so the
-automatic browser login does not apply there. Files live on ephemeral disk and expire after
-`JOB_TTL_MINUTES`.
+For actual 4K60 enhancement use a machine with real cores: `docker compose up -d --build`
+behind Caddy or nginx for HTTPS, `AUTO_BROWSER_COOKIES=off`, and `INSTAGRAM_COOKIES` for a
+throwaway account.
 
 ## Logins: stories, private accounts — and most reels
 
@@ -227,6 +226,7 @@ commented list. The important ones:
 | `JOB_TTL_MINUTES` | `60` | files are deleted this long after a job finishes |
 | `MAX_CONCURRENT_JOBS` | `2` | parallel jobs (enhancement is CPU/GPU heavy) |
 | `MAX_JOBS_PER_IP` | `2` | active jobs per client |
+| `ENHANCEMENT_ENABLED` | `true` | `false` turns the app into a plain best-quality downloader (weak servers) |
 | `MAX_DURATION_SECONDS` | `600` | longest clip that will be *enhanced* |
 | `VIDEO_ENCODER` | `auto` | `libx264`, `libx265`, `h264_videotoolbox`, `h264_nvenc`, … |
 | `X264_PRESET` / `X264_CRF` | `medium` / `18` | software-encoder quality |

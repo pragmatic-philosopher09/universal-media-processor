@@ -225,7 +225,9 @@ class JobManager:
         except OSError as exc:
             # Read-only or missing DATA_DIR (common on PaaS containers): fall back to a temp dir.
             fallback = Path(tempfile.gettempdir()) / "media-downloader"
-            log.warning("DATA_DIR %s unusable (%s); using %s", self.settings.data_dir, exc, fallback)
+            log.warning(
+                "DATA_DIR %s unusable (%s); using %s", self.settings.data_dir, exc, fallback
+            )
             self.settings = replace(self.settings, data_dir=fallback)
             self.settings.jobs_dir.mkdir(parents=True, exist_ok=True)
         for stale in self.settings.jobs_dir.iterdir():

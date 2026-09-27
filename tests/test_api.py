@@ -293,3 +293,16 @@ def test_youtube_job_is_accepted(client, fake_download):
         job["platform"] == "youtube" and job["url"] == "https://www.youtube.com/watch?v=jNQXAC9IVRw"
     )
     assert job["status"] == "done"
+
+
+def test_enhancement_can_be_disabled(settings, fake_download):
+    from dataclasses import replace
+
+    app = create_app(replace(settings, enhancement_enabled=False))
+    with TestClient(app) as client:
+        caps = client.get("/api/capabilities").json()
+        assert caps["enhancement"]["enabled"] is False and caps["enhancement"]["reason"]
+        assert client.post("/api/jobs", json={"url": REEL, "mode": "enhance"}).status_code == 400
+        response = client.post("/api/jobs", json={"url": REEL, "mode": "original"})
+        assert response.status_code == 202
+        assert wait_for(client, response.json()["id"])["status"] == "done"

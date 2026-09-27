@@ -175,6 +175,15 @@
 
   const applyCapabilities = (caps) => {
     capabilities = caps;
+    if (caps.enhancement && caps.enhancement.enabled === false) {
+      const enhanceRadio = form.querySelector('input[name="mode"][value="enhance"]');
+      enhanceRadio.disabled = true;
+      enhanceRadio.parentElement.title = caps.enhancement.reason || "Enhancement is disabled on this server.";
+      enhanceRadio.parentElement.querySelector("span").textContent = "Enhance → 4K 60 fps (off on this server)";
+      form.elements.mode.value = "original";
+      syncModeUI();
+      enhanceOptions.classList.add("hidden");
+    }
     const ai = caps.ai || {};
     const aiOption = $("#engine-ai");
     if (!ai.available) {
@@ -207,7 +216,10 @@
     const enc = caps.ffmpeg ? caps.ffmpeg.encoder : "?";
     const hw = caps.ffmpeg && caps.ffmpeg.hardware ? " (hardware)" : "";
     const limit = caps.limits ? `${Math.round(caps.limits.max_duration_seconds / 60)} min` : "";
-    capsEl.textContent = `Server: yt-dlp ${caps.yt_dlp_version} · encoder ${enc}${hw} · AI ${ai.available ? "ready" : "off"} · enhancement limit ${limit} per clip · files auto-delete after ${caps.limits ? caps.limits.job_ttl_minutes : "?"} min.`;
+    const enhancement = caps.enhancement && caps.enhancement.enabled === false
+      ? "enhancement off (downloads only)"
+      : `encoder ${enc}${hw} · AI ${ai.available ? "ready" : "off"} · enhancement limit ${limit} per clip`;
+    capsEl.textContent = `Server: yt-dlp ${caps.yt_dlp_version} · ${enhancement} · files auto-delete after ${caps.limits ? caps.limits.job_ttl_minutes : "?"} min.`;
     syncUrlHint();
   };
 

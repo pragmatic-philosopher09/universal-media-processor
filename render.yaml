@@ -1,0 +1,34 @@
+# Render Blueprint (https://render.com/docs/blueprint-spec)
+# Free tier: 0.1 CPU / 512 MB, ephemeral disk, spins down after 15 min idle -> downloads only.
+services:
+  - type: web
+    name: media-downloader
+    runtime: docker
+    plan: free
+    region: oregon
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /api/capabilities
+    autoDeploy: true
+    envVars:
+      - key: ENHANCEMENT_ENABLED
+        value: "false"
+      - key: AUTO_BROWSER_COOKIES
+        value: "off"
+      - key: TRUST_PROXY
+        value: "1"
+      - key: MAX_CONCURRENT_JOBS
+        value: "1"
+      - key: MAX_JOBS_PER_IP
+        value: "1"
+      - key: MAX_SOURCE_DURATION_SECONDS
+        value: "900"
+      - key: JOB_TTL_MINUTES
+        value: "20"
+      - key: DATA_DIR
+        value: /tmp/media-downloader
+      # Instagram login-walls datacenter IPs: set a throwaway account's cookies in the dashboard.
+      - key: INSTAGRAM_COOKIES
+        sync: false
+      # Optional: only if YouTube starts demanding "confirm you're not a bot".
+      - key: YOUTUBE_COOKIES
+        sync: false
