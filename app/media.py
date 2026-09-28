@@ -22,6 +22,14 @@ log = logging.getLogger(__name__)
 ProgressCallback = Callable[[float], None]
 IMAGE_CODECS = {"png", "mjpeg", "webp", "gif", "bmp", "tiff", "jpegxl", "avif"}
 
+# Only self-contained video containers: no playlists, image sequences or network inputs.
+UPLOAD_INPUT_ARGS = [
+    "-protocol_whitelist",
+    "file,pipe",
+    "-format_whitelist",
+    "mov,matroska,webm,avi,mpegts,mpeg,flv,ogg,asf",
+]
+
 
 class JobCancelled(Exception):
     """Raised inside a pipeline when the user cancelled the job."""
@@ -127,22 +135,38 @@ def fps_to_ffmpeg_rate(fps: float) -> str:
     return str(frac.numerator) if frac.denominator == 1 else f"{frac.numerator}/{frac.denominator}"
 
 
-async def ffprobe(path: Path, settings: Settings) -> VideoInfo:
+async def ffprobe(
+    path: Path, settings: Settings, *, local_upload: bool = False, cancel: CancelToken | None = None
+) -> VideoInfo:
     cmd = [
         settings.ffprobe_bin,
         "-v",
         "error",
         "-show_entries",
         "stream=index,codec_type,codec_name,width,height,r_frame_rate,avg_frame_rate,"
-        "nb_frames,bit_rate,duration:format=duration,bit_rate,size",
+        "nb_frames,bit_rate,duration,sample_aspect_ratio:stream_side_data=rotation:"
+        "format=duration,bit_rate,size",
         "-of",
         "json",
+        *(UPLOAD_INPUT_ARGS if local_upload else []),
         str(path),
     ]
     proc = await asyncio.create_subprocess_exec(
         *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
     )
-    out, err = await proc.communicate()
+    if cancel:
+        cancel.register(proc)
+    try:
+        out, err = await asyncio.wait_for(proc.communicate(), timeout=60)
+        if cancel:
+            cancel.check()
+    except TimeoutError as exc:
+        raise FFmpegError("Video inspection timed out; try a different video.") from exc
+    finally:
+        _kill(proc)
+        await proc.wait()
+        if cancel:
+            cancel.unregister(proc)
     if proc.returncode != 0:
         raise FFmpegError(f"ffprobe failed for {path.name}: {err.decode(errors='replace').strip()}")
     data = json.loads(out or b"{}")
@@ -160,9 +184,18 @@ async def ffprobe(path: Path, settings: Settings) -> VideoInfo:
         nb_frames = int(round(duration * fps))
     if (video.get("codec_name") or "") in IMAGE_CODECS and (nb_frames or 1) <= 1:
         fps, duration, nb_frames = 0.0, 0.0, 1
+    width, height = int(video.get("width") or 0), int(video.get("height") or 0)
+    if local_upload:
+        sar = parse_rate((video.get("sample_aspect_ratio") or "").replace(":", "/")) or 1
+        width = round(width * sar)
+        rotation = next(
+            (s["rotation"] for s in video.get("side_data_list", []) if "rotation" in s), 0
+        )
+        if abs(round(rotation)) % 180 == 90:
+            width, height = height, width
     return VideoInfo(
-        width=int(video.get("width") or 0),
-        height=int(video.get("height") or 0),
+        width=width,
+        height=height,
         fps=fps,
         duration=duration,
         nb_frames=nb_frames or None,

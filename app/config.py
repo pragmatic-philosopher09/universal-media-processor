@@ -122,6 +122,8 @@ class Settings:
     host: str = "0.0.0.0"
     port: int = 8000
     trust_proxy: bool = False
+    app_username: str | None = None
+    app_password: str | None = field(default=None, repr=False)
     data_dir: Path = Path("data")
     job_ttl_minutes: int = 60
     max_concurrent_jobs: int = 2
@@ -129,6 +131,7 @@ class Settings:
     enhancement_enabled: bool = True
     max_duration_seconds: int = 600
     max_source_duration_seconds: int = 1800
+    max_upload_bytes: int = 500 * 1024 * 1024
     allowed_domains: tuple[str, ...] = DEFAULT_ALLOWED_DOMAINS
 
     # Logins. Per-platform `Cookie:` header strings (INSTAGRAM_COOKIES, YOUTUBE_COOKIES, ...),
@@ -145,6 +148,8 @@ class Settings:
     # always = for every request (single-user deployments only), off = never
     auto_browser_cookies: str = "local"
     browser_cookie_order: tuple[str, ...] = DEFAULT_BROWSER_ORDER
+    fastvideosave_enabled: bool = False
+    fastvideosave_browser_channel: str | None = None
 
     # ffmpeg
     ffmpeg_bin: str = "ffmpeg"
@@ -208,6 +213,8 @@ class Settings:
             host=_str("HOST", "0.0.0.0") or "0.0.0.0",
             port=_int("PORT", 8000),
             trust_proxy=_bool("TRUST_PROXY", False),
+            app_username=_str("APP_USERNAME"),
+            app_password=_str("APP_PASSWORD"),
             data_dir=_path("DATA_DIR", "data") or Path("data"),
             job_ttl_minutes=_int("JOB_TTL_MINUTES", 60),
             max_concurrent_jobs=max(1, _int("MAX_CONCURRENT_JOBS", 2)),
@@ -215,6 +222,7 @@ class Settings:
             enhancement_enabled=_bool("ENHANCEMENT_ENABLED", True),
             max_duration_seconds=_int("MAX_DURATION_SECONDS", 600),
             max_source_duration_seconds=_int("MAX_SOURCE_DURATION_SECONDS", 1800),
+            max_upload_bytes=max(1, _int("MAX_UPLOAD_MB", 500)) * 1024 * 1024,
             allowed_domains=domains,
             platform_cookies=_platform_cookies_from_env(),
             cookies_file=_path("COOKIES_FILE") or _path("IG_COOKIES_FILE"),
@@ -228,6 +236,8 @@ class Settings:
             },
             auto_browser_cookies=auto_browser,
             browser_cookie_order=browser_order,
+            fastvideosave_enabled=_bool("FASTVIDEOSAVE_ENABLED", False),
+            fastvideosave_browser_channel=_str("FASTVIDEOSAVE_BROWSER_CHANNEL"),
             ffmpeg_bin=_str("FFMPEG_BIN", "ffmpeg") or "ffmpeg",
             ffprobe_bin=_str("FFPROBE_BIN", "ffprobe") or "ffprobe",
             video_encoder=encoder,

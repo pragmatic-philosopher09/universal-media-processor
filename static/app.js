@@ -13,6 +13,12 @@
   const rememberCookies = $("#remember-cookies");
   const authStatus = $("#auth-status");
   const advanced = $("#advanced");
+  const uploadForm = $("#upload-form");
+  const videoFile = $("#video-file");
+  const conversionPreset = $("#conversion-preset");
+  const convertBtn = $("#convert");
+  const uploadLimits = $("#upload-limits");
+  let uploadRequest = null;
 
   const statusCard = $("#status");
   const stageEl = $("#stage");
@@ -32,6 +38,7 @@
   let currentJob = null;
   let pollTimer = null;
   let tickTimer = null;
+  let appendResults = false;
 
   // ------------------------------------------------------------------ helpers
 
@@ -175,6 +182,24 @@
 
   const applyCapabilities = (caps) => {
     capabilities = caps;
+    $("#fallback-notice").classList.toggle("hidden", caps.instagram_fallback !== "fastvideosave");
+    const conversionEnabled = caps.conversion && caps.conversion.enabled;
+    conversionPreset.innerHTML = "";
+    ((caps.conversion && caps.conversion.presets) || []).forEach((preset) => {
+      conversionPreset.add(new Option(preset.label, preset.id));
+    });
+    conversionPreset.value = "2160p60";
+    conversionPreset.disabled = !conversionEnabled;
+    convertBtn.disabled = !conversionEnabled || submit.disabled;
+    resultsEl.querySelectorAll(".upscale").forEach((button) => {
+      button.disabled = !conversionEnabled || submit.disabled;
+    });
+    const durationLimit = caps.limits && caps.limits.max_duration_seconds;
+    uploadLimits.textContent = conversionEnabled
+      ? `Up to ${fmtBytes(caps.limits.max_upload_bytes)} per video` +
+        (durationLimit ? ` · ${fmtDuration(durationLimit)} maximum` : "") +
+        ` · files expire ${caps.limits.job_ttl_minutes} min after completion. Your video is uploaded to this server for processing.`
+      : "Video conversion is disabled on this server. Run locally or on a server with enhancement enabled.";
     if (caps.enhancement && caps.enhancement.enabled === false) {
       const enhanceRadio = form.querySelector('input[name="mode"][value="enhance"]');
       enhanceRadio.disabled = true;
@@ -206,12 +231,14 @@
     } else if (browserLoginActive()) {
       authStatus.className = "hint ok";
       const browsers = (caps.browser_login.browsers || []).slice(0, 3).map((b) => b[0].toUpperCase() + b.slice(1)).join(", ");
-      authStatus.textContent = `You're on the computer running this server, so whenever a site demands a login the app uses the session from your own browser (${browsers}…) automatically — nothing to paste. Only fill the box below if that fails (e.g. Safari needs Full Disk Access to be readable).`;
-      summary.textContent = "Advanced · logins (automatic from your browser)";
+      authStatus.textContent = caps.browser_login.mode === "always"
+        ? `Instagram downloads can use the server owner's browser login (${browsers}…) automatically. Everyone with access to this app shares that Instagram session. Keep the app password private.`
+        : `You're on the computer running this server, so when Instagram demands a login the app uses your browser session (${browsers}…) automatically. Only fill the box below if that fails.`;
+      summary.textContent = "Advanced · Instagram login (automatic)";
     } else {
       authStatus.className = "hint";
-      authStatus.textContent = "This server has no Instagram session configured. Paste a cookie below to download Instagram stories, private content, or anything a site hides from logged-out visitors. YouTube, TikTok and DeviantArt usually work without one.";
-      summary.textContent = "Advanced · logins (needed for Instagram stories & most reels)";
+      authStatus.textContent = "Public links are fetched without a site login. If a platform restricts a particular link, retry later or upload the video directly. You can optionally supply your own site cookie below for content you are permitted to access.";
+      summary.textContent = "Advanced · optional site credentials";
     }
     if (caps.allow_user_cookies === false) {
       cookiesInput.disabled = true;
@@ -230,10 +257,17 @@
   const showStatus = (job) => {
     statusCard.classList.remove("hidden", "done", "error");
     stageEl.textContent = job.stage || job.status;
-    const active = ["queued", "downloading", "enhancing"].includes(job.status);
-    cancelBtn.classList.toggle("hidden", !active);
+    const active = ["uploading", "queued", "downloading", "enhancing"].includes(job.status);
+    cancelBtn.classList.toggle("hidden", !active || (!currentJob && !uploadRequest));
     submit.disabled = active;
     submit.textContent = active ? "Working…" : "Fetch";
+    convertBtn.disabled = active || !(capabilities && capabilities.conversion && capabilities.conversion.enabled);
+    convertBtn.textContent = active && job.kind === "upload" ? "Working…" : "Upload & convert";
+    videoFile.disabled = active;
+    conversionPreset.disabled = convertBtn.disabled;
+    resultsEl.querySelectorAll(".upscale").forEach((button) => {
+      button.disabled = convertBtn.disabled;
+    });
 
     const pct = Math.round((job.progress || 0) * 100);
     const indeterminate = active && job.progress <= 0.001;
@@ -241,7 +275,8 @@
     barFill.style.width = indeterminate ? "" : `${pct}%`;
 
     let sub = "";
-    if (job.status === "downloading") sub = pct ? `${pct}%` : "Resolving the best rendition…";
+    if (job.status === "uploading") sub = `${pct}% uploaded`;
+    else if (job.status === "downloading") sub = pct ? `${pct}%` : "Resolving the best rendition…";
     else if (job.status === "enhancing") sub = `${pct}% · interpolating and upscaling frame by frame — this takes a while`;
     else if (job.status === "done") sub = "Done. Files are kept for a limited time.";
     else if (job.status === "cancelled") sub = "Cancelled.";
@@ -262,7 +297,7 @@
       if (src.bit_rate) chipsEl.appendChild(chip("bitrate", `${(src.bit_rate / 1e6).toFixed(1)} Mbps`));
       if (job.sources.length > 1) chipsEl.appendChild(chip("items", String(job.sources.length)));
     }
-    if (job.plan && job.options && job.options.mode === "enhance") {
+    if (job.plan && job.options && ["enhance", "convert"].includes(job.options.mode)) {
       chipsEl.appendChild(chip("target", `${job.plan.target_width}×${job.plan.target_height} @ ${fmtFps(job.plan.target_fps)} fps`));
       if (job.engine) chipsEl.appendChild(chip("engine", job.engine));
     }
@@ -284,8 +319,11 @@
   };
 
   const showResults = (job) => {
-    resultsEl.innerHTML = "";
-    if (!job.outputs || !job.outputs.length) { resultsEl.classList.add("hidden"); return; }
+    if (!appendResults) resultsEl.innerHTML = "";
+    if (!job.outputs || !job.outputs.length) {
+      resultsEl.classList.toggle("hidden", !resultsEl.children.length);
+      return;
+    }
     resultsEl.classList.remove("hidden");
     job.outputs.forEach((out) => {
       const node = template.content.firstElementChild.cloneNode(true);
@@ -304,8 +342,12 @@
         video.src = `${out.url}?inline=1`;
       }
       const platformName = job.platform_name || "the platform";
-      node.querySelector(".result-kind").textContent = out.kind === "enhanced"
+      node.querySelector(".result-kind").textContent = out.kind === "converted"
+        ? `Converted MP4 · ${out.engine || "ffmpeg"}`
+        : out.kind === "enhanced"
         ? `Enhanced · ${out.engine || ""}`
+        : job.source_provider
+        ? `Original · supplied by ${job.source_provider}`
         : `Original · best rendition ${platformName} serves`;
       node.querySelector(".result-name").textContent = out.download_name;
       node.querySelector(".result-meta").textContent = out.is_image
@@ -315,7 +357,8 @@
       const link = node.querySelector(".download");
       link.href = out.url;
       link.setAttribute("download", out.download_name);
-      link.textContent = out.kind === "enhanced" ? "Download enhanced" : "Download original";
+      link.textContent = out.kind === "converted" ? (job.conversion_preset === "2160p60" ? "Download 4K 60 fps" : "Download MP4")
+        : out.kind === "enhanced" ? "Download enhanced" : "Download original";
       link.addEventListener("click", () => {
         // Embedded browsers save silently; confirm it and block accidental repeat clicks.
         const label = link.textContent;
@@ -324,7 +367,20 @@
         toast(`<b>Download started:</b> ${out.download_name} — look in your browser's Downloads folder.`);
         setTimeout(() => { link.classList.remove("busy"); link.textContent = label; }, 4000);
       });
-      resultsEl.appendChild(node);
+      if (out.kind === "original" && !out.is_image) {
+        node.querySelector(".result-conversion").classList.remove("hidden");
+        const button = node.querySelector(".upscale");
+        button.disabled = !(capabilities && capabilities.conversion && capabilities.conversion.enabled);
+        if (capabilities && capabilities.conversion && !capabilities.conversion.enabled) {
+          node.querySelector(".conversion-availability").textContent = "Conversion is disabled on this server.";
+        }
+        button.addEventListener("click", () => {
+          if (submit.disabled || button.disabled) return;
+          startJob(null, `${out.url}/convert?preset=2160p60`, true);
+        });
+      }
+      if (appendResults) resultsEl.prepend(node);
+      else resultsEl.appendChild(node);
     });
   };
 
@@ -347,6 +403,7 @@
         stopPolling();
         return;
       }
+      if (!res.ok) throw new Error(`Status request failed (${res.status})`);
       const job = await res.json();
       pollFailures = 0;
       currentJob = job;
@@ -369,14 +426,18 @@
     pollTimer = setTimeout(poll, delay);
   };
 
-  const startJob = async (payload) => {
+  const startJob = async (payload, endpoint = "/api/jobs", keepResults = false) => {
     stopPolling();
-    resultsEl.classList.add("hidden");
-    resultsEl.innerHTML = "";
+    currentJob = null;
+    appendResults = keepResults;
+    if (!keepResults) {
+      resultsEl.classList.add("hidden");
+      resultsEl.innerHTML = "";
+    }
     showStatus({ status: "queued", stage: "Submitting…", progress: 0, elapsed: 0 });
     let res;
     try {
-      res = await fetch("/api/jobs", {
+      res = await fetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
@@ -395,7 +456,11 @@
       showStatus({ status: "error", stage: "Rejected", error: detail, progress: 0, elapsed: 0 });
       return;
     }
-    currentJob = await res.json();
+    trackJob(await res.json());
+  };
+
+  const trackJob = (job) => {
+    currentJob = job;
     pollFailures = 0;
     const started = Date.now();
     showStatus(currentJob);
@@ -406,6 +471,64 @@
     }, 1000);
     poll();
   };
+
+  videoFile.addEventListener("change", () => {
+    const file = videoFile.files[0];
+    $("#upload-file-hint").textContent = file
+      ? `${file.name} · ${fmtBytes(file.size)}`
+      : "Choose a video. Common formats include MP4, MOV, MKV, WebM and AVI.";
+  });
+
+  uploadForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const file = videoFile.files[0];
+    if (!file || convertBtn.disabled) return;
+    if (!file.size || file.size > capabilities.limits.max_upload_bytes) {
+      showStatus({ status: "error", stage: "Upload rejected", error: !file.size
+        ? "Choose a non-empty video."
+        : `Video exceeds the ${fmtBytes(capabilities.limits.max_upload_bytes)} upload limit.` });
+      return;
+    }
+    stopPolling();
+    currentJob = null;
+    appendResults = false;
+    resultsEl.classList.add("hidden");
+    resultsEl.innerHTML = "";
+    const xhr = new XMLHttpRequest();
+    uploadRequest = xhr;
+    const params = new URLSearchParams({ filename: file.name, preset: conversionPreset.value });
+    xhr.open("POST", `/api/uploads?${params}`);
+    xhr.setRequestHeader("Content-Type", "application/octet-stream");
+    const started = Date.now();
+    const uploadStatus = (progress = 0) => showStatus({
+      kind: "upload", status: "uploading",
+      stage: progress >= 1 ? "Upload sent - waiting for server…" : "Uploading video…",
+      progress, elapsed: (Date.now() - started) / 1000,
+    });
+    xhr.upload.onprogress = (e) => uploadStatus(e.lengthComputable ? e.loaded / e.total : 0);
+    xhr.onload = () => {
+      uploadRequest = null;
+      let body;
+      try { body = JSON.parse(xhr.responseText); } catch { body = null; }
+      if (xhr.status !== 202 || !body || !body.id) {
+        const detail = body && typeof body.detail === "string" ? body.detail
+          : `Upload rejected (${xhr.status}). Check the video and server or reverse-proxy upload limits.`;
+        showStatus({ status: "error", stage: "Upload rejected", error: detail });
+        return;
+      }
+      trackJob(body);
+    };
+    xhr.onerror = () => {
+      uploadRequest = null;
+      showStatus({ status: "error", stage: "Upload failed", error: SERVER_DOWN });
+    };
+    xhr.onabort = () => {
+      uploadRequest = null;
+      showStatus({ status: "cancelled", stage: "Upload cancelled" });
+    };
+    uploadStatus();
+    xhr.send(file);
+  });
 
   const submitCurrent = () => {
     const url = urlInput.value.trim();
@@ -447,9 +570,16 @@
   document.addEventListener("paste", handlePaste);
 
   cancelBtn.addEventListener("click", async () => {
+    if (uploadRequest) { uploadRequest.abort(); return; }
     if (!currentJob) return;
     cancelBtn.disabled = true;
-    try { await fetch(`/api/jobs/${currentJob.id}`, { method: "DELETE" }); } finally { cancelBtn.disabled = false; }
+    try {
+      const res = await fetch(`/api/jobs/${currentJob.id}`, { method: "DELETE" });
+      if (!res.ok) throw new Error(`Cancellation failed (${res.status})`);
+    } catch (err) {
+      errorEl.textContent = `Could not cancel the job: ${err.message}. Try again.`;
+      errorEl.classList.remove("hidden");
+    } finally { cancelBtn.disabled = false; }
   });
 
   form.elements.mode.forEach((radio) => radio.addEventListener("change", () => { syncModeUI(); saveOptions(); }));
@@ -468,6 +598,8 @@
     .catch(() => {
       capsEl.textContent = SERVER_DOWN;
       capsEl.classList.add("warn");
+      uploadLimits.textContent = "Unable to check conversion availability. Reload once the server is reachable.";
+      uploadLimits.classList.add("warn");
     });
   const params = new URLSearchParams(location.search);
   if (params.get("url")) {

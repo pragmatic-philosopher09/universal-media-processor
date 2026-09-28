@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import math
 import re
 import shutil
 import tempfile
@@ -20,7 +21,15 @@ from .enhance_ai import AIEngineError, enhance_with_ncnn, enhance_with_video2x, 
 from .enhance_ffmpeg import enhance_image, enhance_with_ffmpeg
 from .extractor import DownloadedItem, ExtractError, download
 from .media import CancelToken, FFmpegError, JobCancelled, VideoInfo, choose_encoder, ffprobe
-from .plan import FPS_PRESETS, RESOLUTION_PRESETS, EnhancePlan, PlanError, make_plan
+from .plan import (
+    CONVERSION_PRESETS,
+    FPS_PRESETS,
+    RESOLUTION_PRESETS,
+    EnhancePlan,
+    PlanError,
+    make_conversion_plan,
+    make_plan,
+)
 from .urls import InvalidURL, MediaURL, normalize_url
 
 MEDIA_TYPES = {
@@ -39,6 +48,7 @@ log = logging.getLogger(__name__)
 
 
 class JobStatus(StrEnum):
+    UPLOADING = "uploading"
     QUEUED = "queued"
     DOWNLOADING = "downloading"
     ENHANCING = "enhancing"
@@ -47,7 +57,12 @@ class JobStatus(StrEnum):
     CANCELLED = "cancelled"
 
 
-ACTIVE_STATUSES = {JobStatus.QUEUED, JobStatus.DOWNLOADING, JobStatus.ENHANCING}
+ACTIVE_STATUSES = {
+    JobStatus.UPLOADING,
+    JobStatus.QUEUED,
+    JobStatus.DOWNLOADING,
+    JobStatus.ENHANCING,
+}
 TERMINAL_STATUSES = {JobStatus.DONE, JobStatus.ERROR, JobStatus.CANCELLED}
 
 
@@ -96,7 +111,7 @@ class OutputFile:
     index: int
     path: Path
     download_name: str
-    kind: str  # original | enhanced
+    kind: str  # original | enhanced | converted
     media_id: str
     info: VideoInfo
     engine: str | None = None
@@ -128,17 +143,20 @@ class OutputFile:
 @dataclass
 class Job:
     id: str
-    target: MediaURL
+    target: MediaURL | None
     options: JobOptions
     client_ip: str
     dir: Path
     client_is_local: bool = False
+    upload_name: str | None = None
+    conversion_preset: str | None = None
     cancel: CancelToken = field(default_factory=CancelToken)
     status: JobStatus = JobStatus.QUEUED
     stage: str = "Queued"
     progress: float = 0.0
     error: str | None = None
     auth: str | None = None
+    source_provider: str | None = None
     sources: list[dict] = field(default_factory=list)
     plan: dict | None = None
     engine: str | None = None
@@ -178,16 +196,23 @@ class Job:
     def to_dict(self) -> dict:
         return {
             "id": self.id,
-            "url": self.target.url,
-            "platform": self.target.platform,
-            "platform_name": self.target.platform_info.name,
-            "kind": self.target.kind,
-            "options": self.options.to_dict(),
+            "url": self.target.url if self.target else None,
+            "platform": self.target.platform if self.target else "upload",
+            "platform_name": self.target.platform_info.name if self.target else "Uploaded video",
+            "kind": self.target.kind if self.target else "upload",
+            "upload_name": self.upload_name,
+            "conversion_preset": self.conversion_preset,
+            "options": (
+                {"mode": "convert", "preset": self.conversion_preset, "engine": "ffmpeg"}
+                if self.conversion_preset
+                else self.options.to_dict()
+            ),
             "status": self.status.value,
             "stage": self.stage,
             "progress": round(self.progress, 4),
             "error": self.error,
             "auth": self.auth,
+            "source_provider": self.source_provider,
             "sources": self.sources,
             "plan": self.plan,
             "engine": self.engine,
@@ -287,6 +312,52 @@ class JobManager:
         # Validate pasted cookies now so the user gets immediate feedback.
         resolve_cookie_source(self.settings, options.cookies, target.platform_info)
 
+        job = self._reserve(target, options, client_ip, client_is_local=client_is_local)
+        self.enqueue(job)
+        return job
+
+    def create_upload(self, filename: str, preset: str, client_ip: str) -> Job:
+        if not self.settings.enhancement_enabled:
+            raise ValueError("Video conversion is disabled on this server.")
+        if preset not in CONVERSION_PRESETS:
+            raise ValueError("Unknown conversion preset.")
+        job = self._reserve(None, JobOptions(engine="ffmpeg"), client_ip)
+        job.upload_name = safe_filename(Path(filename.replace("\\", "/")).stem, "video")
+        job.conversion_preset = preset
+        job.set_stage(JobStatus.UPLOADING, "Uploading video", 0.0)
+        return job
+
+    def convert_output(self, job_id: str, index: int, preset: str, client_ip: str) -> Job:
+        source_job = self.get(job_id)
+        if not source_job.done:
+            raise ValueError("Wait for the original download to finish before converting it.")
+        if index < 0 or index >= len(source_job.outputs):
+            raise IndexError("File not found")
+        output = source_job.outputs[index]
+        if output.info.is_image:
+            raise ValueError("This conversion requires a video, not an image.")
+        if not output.path.is_file():
+            raise FileNotFoundError("The original file has expired. Fetch the link again.")
+        job = self.create_upload(output.download_name, preset, client_ip)
+        accepted = False
+        try:
+            # Independent directory entry keeps the source alive if its original job expires.
+            (job.dir / "source.video").hardlink_to(output.path)
+            self.enqueue(job)
+            accepted = True
+            return job
+        finally:
+            if not accepted:
+                self.delete(job.id)
+
+    def _reserve(
+        self,
+        target: MediaURL | None,
+        options: JobOptions,
+        client_ip: str,
+        *,
+        client_is_local: bool = False,
+    ) -> Job:
         active = [
             job
             for job in self.jobs.values()
@@ -308,8 +379,21 @@ class JobManager:
         )
         job.dir.mkdir(parents=True, exist_ok=True)
         self.jobs[job_id] = job
-        job.task = asyncio.create_task(self._run(job), name=f"job-{job_id}")
         return job
+
+    def enqueue(self, job: Job) -> None:
+        job.set_stage(JobStatus.QUEUED, "Queued", 0.0)
+        job.task = asyncio.create_task(self._run(job), name=f"job-{job.id}")
+
+        # A task cancelled before its first turn never reaches _run's exception handler.
+        def finish_cancelled(task: asyncio.Task) -> None:
+            if task.cancelled() and not job.done:
+                job.finish(JobStatus.CANCELLED, "Cancelled")
+                job.options.cookies = None
+                if job.conversion_preset:
+                    (job.dir / "source.video").unlink(missing_ok=True)
+
+        job.task.add_done_callback(finish_cancelled)
 
     def cancel(self, job_id: str) -> Job:
         job = self.get(job_id)
@@ -332,7 +416,10 @@ class JobManager:
         try:
             async with self._semaphore:
                 job.cancel.check()
-                await self._execute(job)
+                if job.conversion_preset:
+                    await self._convert_upload(job)
+                else:
+                    await self._execute(job)
         except (JobCancelled, asyncio.CancelledError):
             job.finish(JobStatus.CANCELLED, "Cancelled")
         except (
@@ -350,16 +437,23 @@ class JobManager:
             job.finish(JobStatus.ERROR, "Failed", f"Unexpected error: {exc}")
         finally:
             job.options.cookies = None
+            if job.conversion_preset:
+                (job.dir / "source.video").unlink(missing_ok=True)
+                if job.status != JobStatus.DONE:
+                    (job.dir / "converted.mp4").unlink(missing_ok=True)
             shutil.rmtree(job.dir / "chunks", ignore_errors=True)
             if job.status != JobStatus.DONE:
                 for stray in job.dir.glob("*.part"):
                     stray.unlink(missing_ok=True)
 
     def _browser_login_allowed(self, job: Job) -> bool:
+        if job.target is None or job.target.platform != "instagram":
+            return False
         mode = self.settings.auto_browser_cookies
         return mode == "always" or (mode == "local" and job.client_is_local)
 
     async def _browser_login(self, job: Job) -> tuple[CookieSource | None, str]:
+        assert job.target is not None
         result = await asyncio.to_thread(
             discover_browser_session, self.settings, job.target.platform_info
         )
@@ -370,6 +464,7 @@ class JobManager:
         """Download with the configured credentials, falling back to the operator's own browser
         login (same-machine requests only) when Instagram insists on a login."""
         settings = self.settings
+        assert job.target is not None
         platform = job.target.platform_info
         cookie_source = resolve_cookie_source(settings, job.options.cookies, platform)
         job.options.cookies = None
@@ -425,15 +520,31 @@ class JobManager:
 
     async def _execute(self, job: Job) -> None:
         settings = self.settings
+        assert job.target is not None
         job.set_stage(JobStatus.DOWNLOADING, f"Contacting {job.target.platform_info.name}…", 0.0)
         result, cookie_source = await self._fetch(job)
         job.auth = cookie_source.describe()
+        job.source_provider = result.provider
         job.cancel.check()
         job.set_progress(1.0, "Download complete")
 
+        if result.provider:
+            job.warnings.append(
+                f"Retrieved through {result.provider}, a third-party service. "
+                "This is its supplied video rendition, not necessarily Instagram's highest quality. "
+                "Photo items are not included by this fallback."
+            )
         probed: list[tuple[DownloadedItem, VideoInfo]] = []
         for item in result.items:
-            info = await ffprobe(item.path, settings)
+            info = await ffprobe(
+                item.path, settings, local_upload=bool(result.provider), cancel=job.cancel
+            )
+            if result.provider and settings.max_source_duration_seconds:
+                if info.duration > settings.max_source_duration_seconds:
+                    raise ExtractError(
+                        "The retrieved video exceeds the server's source duration limit.",
+                        "too_long",
+                    )
             probed.append((item, info))
             job.sources.append(
                 {
@@ -470,6 +581,58 @@ class JobManager:
             )
         job.outputs = outputs
         job.finish(JobStatus.DONE, "Ready")
+
+    async def _convert_upload(self, job: Job) -> None:
+        settings = self.settings
+        assert job.conversion_preset is not None
+        src, dst = job.dir / "source.video", job.dir / "converted.mp4"
+        job.set_stage(JobStatus.ENHANCING, "Inspecting uploaded video", 0.0)
+        info = await ffprobe(src, settings, local_upload=True, cancel=job.cancel)
+        job.cancel.check()
+        if not math.isfinite(info.duration) or info.duration <= 0:
+            raise PlanError("The uploaded video has no readable duration.")
+        if settings.max_duration_seconds and info.duration > settings.max_duration_seconds:
+            raise PlanError(f"Video exceeds the {settings.max_duration_seconds}s conversion limit.")
+        plan = make_conversion_plan(info, job.conversion_preset)
+        job.sources = [{"title": job.upload_name, **info.to_dict()}]
+        job.plan = plan.to_dict()
+        job.engine = "ffmpeg"
+        encoder = await choose_encoder(settings)
+        job.set_stage(
+            JobStatus.ENHANCING,
+            f"Converting to {plan.target_width}x{plan.target_height} @ {plan.target_fps:.0f} fps",
+            0.0,
+        )
+        await enhance_with_ffmpeg(
+            plan,
+            src,
+            dst,
+            encoder=encoder,
+            settings=settings,
+            cancel=job.cancel,
+            on_progress=job.set_progress,
+            local_upload=True,
+        )
+        job.cancel.check()
+        output = await ffprobe(dst, settings, cancel=job.cancel)
+        if (
+            (output.width, output.height) != (plan.target_width, plan.target_height)
+            or abs(output.fps - plan.target_fps) > 0.01
+            or output.duration <= 0
+        ):
+            raise FFmpegError("Converted video did not match the requested output preset.")
+        job.outputs = [
+            OutputFile(
+                index=0,
+                path=dst,
+                download_name=f"{job.upload_name}_{job.conversion_preset}.mp4",
+                kind="converted",
+                media_id=job.id,
+                info=output,
+                engine=f"ffmpeg/{encoder}",
+            )
+        ]
+        job.finish(JobStatus.DONE, "Ready to download")
 
     async def _enhance_item(
         self,

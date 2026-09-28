@@ -16,7 +16,7 @@ services:
     expose:
       - "8000"
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/capabilities', timeout=4)"]
+      test: ["CMD", "python", "-m", "app.healthcheck"]
       interval: 30s
       timeout: 5s
       retries: 5

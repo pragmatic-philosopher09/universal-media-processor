@@ -70,6 +70,7 @@ def wait_for(client: TestClient, job_id: str, timeout: float = 90) -> dict:
 
 def test_capabilities(client):
     caps = client.get("/api/capabilities").json()
+    assert caps["instagram_fallback"] is None
     assert caps["ffmpeg"]["encoder"] == "libx264"
     assert caps["ai"]["available"] is False
     assert caps["stories_auth_configured"] is False
@@ -84,10 +85,40 @@ def test_capabilities(client):
     assert caps["yt_dlp_version"]
 
 
+def test_fallback_provenance_and_source_limit(settings, fake_download, monkeypatch):
+    from dataclasses import replace
+
+    original_download = jobs_module.download
+
+    def fallback(*args):
+        result = original_download(*args)
+        result.provider = "FastVideoSave"
+        return result
+
+    monkeypatch.setattr(jobs_module, "download", fallback)
+    for duration_limit, expected in [(1800, "done"), (0.5, "error")]:
+        configured = replace(
+            settings, fastvideosave_enabled=True, max_source_duration_seconds=duration_limit
+        )
+        with TestClient(create_app(configured)) as client:
+            assert client.get("/api/capabilities").json()["instagram_fallback"] == "fastvideosave"
+            created = client.post("/api/jobs", json={"url": REEL, "mode": "original"}).json()
+            job = wait_for(client, created["id"])
+            assert job["status"] == expected
+            assert job["source_provider"] == "FastVideoSave"
+            assert any("FastVideoSave" in warning for warning in job["warnings"])
+            if expected == "done":
+                assert client.get(job["outputs"][0]["url"]).status_code == 200
+            else:
+                assert "duration limit" in job["error"]
+
+
 def test_frontend_is_served(client):
     response = client.get("/")
     assert response.status_code == 200
     assert "Media Downloader" in response.text
+    assert 'name="mode" value="original" checked' in response.text
+    assert 'name="mode" value="enhance" checked' not in response.text
     assert client.get("/app.js").status_code == 200
     assert client.get("/style.css").status_code == 200
 
@@ -306,3 +337,91 @@ def test_enhancement_can_be_disabled(settings, fake_download):
         response = client.post("/api/jobs", json={"url": REEL, "mode": "original"})
         assert response.status_code == 202
         assert wait_for(client, response.json()["id"])["status"] == "done"
+
+
+def test_convert_original_without_fetching_again(client, fake_download):
+    response = client.post("/api/jobs", json={"url": REEL, "mode": "original"})
+    original = wait_for(client, response.json()["id"])
+    original_output = original["outputs"][0]
+    source_bytes = client.get(original_output["url"]).content
+    response = client.post(original_output["url"] + "/convert")
+    assert response.status_code == 202, response.text
+    converted = wait_for(client, response.json()["id"])
+    assert converted["status"] == "done", converted
+    (output,) = converted["outputs"]
+    assert (output["width"], output["height"], output["fps"]) == (2160, 2160, 60)
+    assert output["kind"] == "converted"
+    assert len(fake_download) == 1
+    assert client.get(original_output["url"]).content == source_bytes
+    assert client.get(output["url"]).status_code == 200
+
+
+def test_conversion_survives_deleting_original_job(client, fake_download):
+    response = client.post("/api/jobs", json={"url": REEL, "mode": "original"})
+    original = wait_for(client, response.json()["id"])
+    response = client.post(original["outputs"][0]["url"] + "/convert?preset=720p30")
+    assert response.status_code == 202
+    assert client.delete(f"/api/jobs/{original['id']}").status_code == 200
+    converted = wait_for(client, response.json()["id"])
+    assert converted["status"] == "done", converted
+    assert client.get(converted["outputs"][0]["url"]).status_code == 200
+    assert len(fake_download) == 1
+
+
+def test_conversion_rejects_expired_and_invalid_sources(client):
+    assert client.post("/api/jobs/missing/files/0/convert").status_code == 404
+    response = client.post("/api/jobs", json={"url": REEL, "mode": "original"})
+    original = wait_for(client, response.json()["id"])
+    url = original["outputs"][0]["url"]
+    assert client.post(url + "/convert?preset=8k").status_code == 422
+    assert client.post(f"/api/jobs/{original['id']}/files/-1/convert").status_code == 404
+    assert client.post(f"/api/jobs/{original['id']}/files/1/convert").status_code == 404
+    internal = client.app.state.manager.get(original["id"])
+    internal.outputs[0].path.unlink()
+    assert client.post(url + "/convert").status_code == 410
+    assert len(client.app.state.manager.jobs) == 1
+
+
+def test_conversion_rejects_images(client):
+    from dataclasses import replace
+
+    response = client.post("/api/jobs", json={"url": REEL, "mode": "original"})
+    original = wait_for(client, response.json()["id"])
+    internal = client.app.state.manager.get(original["id"])
+    internal.outputs[0].info = replace(internal.outputs[0].info, vcodec="png", nb_frames=1)
+    response = client.post(original["outputs"][0]["url"] + "/convert")
+    assert response.status_code == 400
+    assert "not an image" in response.json()["detail"]
+
+
+def test_conversion_respects_disabled_server(settings, fake_download):
+    from dataclasses import replace
+
+    with TestClient(create_app(replace(settings, enhancement_enabled=False))) as client:
+        response = client.post("/api/jobs", json={"url": REEL, "mode": "original"})
+        original = wait_for(client, response.json()["id"])
+        response = client.post(original["outputs"][0]["url"] + "/convert")
+        assert response.status_code == 400
+        assert "disabled" in response.json()["detail"]
+        assert len(fake_download) == 1
+
+
+def test_conversion_respects_job_limit(client):
+    response = client.post("/api/jobs", json={"url": REEL, "mode": "original"})
+    original = wait_for(client, response.json()["id"])
+    manager = client.app.state.manager
+    for _ in range(manager.settings.max_jobs_per_ip):
+        manager.create_upload("busy.mp4", "720p30", "testclient")
+    assert client.post(original["outputs"][0]["url"] + "/convert").status_code == 429
+
+
+def test_cancelled_conversion_keeps_original(client):
+    response = client.post("/api/jobs", json={"url": REEL, "mode": "original"})
+    original = wait_for(client, response.json()["id"])
+    url = original["outputs"][0]["url"]
+    response = client.post(url + "/convert")
+    assert response.status_code == 202
+    client.delete(f"/api/jobs/{response.json()['id']}")
+    converted = wait_for(client, response.json()["id"])
+    assert converted["status"] == "cancelled"
+    assert client.get(url).status_code == 200

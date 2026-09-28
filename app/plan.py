@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from fractions import Fraction
+from math import isfinite
+from typing import Literal
 
 from .media import VideoInfo
 
@@ -19,6 +21,16 @@ RESOLUTION_PRESETS: dict[str, tuple[int, int] | None] = {
     "2160p": (2160, 3840),
 }
 FPS_PRESETS: dict[str, float | None] = {"original": None, "60": 60.0}
+
+ConversionPreset = Literal["720p30", "1080p30", "1080p60", "1440p60", "2160p30", "2160p60"]
+CONVERSION_PRESETS = {
+    "720p30": ("HD - 720p / 30 fps", 720, 1280, 30),
+    "1080p30": ("Full HD - 1080p / 30 fps", 1080, 1920, 30),
+    "1080p60": ("Full HD - 1080p / 60 fps", 1080, 1920, 60),
+    "1440p60": ("QHD - 1440p / 60 fps", 1440, 2560, 60),
+    "2160p30": ("4K - 2160p / 30 fps", 2160, 3840, 30),
+    "2160p60": ("4K - 2160p / 60 fps", 2160, 3840, 60),
+}
 
 # Ratios that deviate from the requested target by less than this are snapped to a "nice"
 # rational (e.g. 29.97 -> 59.94 fps is treated as an exact 2x instead of 2.002x).
@@ -140,4 +152,26 @@ def make_plan(source: VideoInfo, resolution: str = "2160p", fps: str = "60") -> 
         target_height=target_h,
         target_fps=target_fps,
         fps_ratio=ratio,
+    )
+
+
+def make_conversion_plan(source: VideoInfo, preset: str) -> EnhancePlan:
+    if preset not in CONVERSION_PRESETS:
+        raise PlanError(f"Unknown conversion preset {preset!r}")
+    if (
+        source.is_image
+        or source.width <= 0
+        or source.height <= 0
+        or not isfinite(source.fps)
+        or source.fps <= 0
+    ):
+        raise PlanError("Upload a video with valid dimensions and frame rate, not a still image.")
+    _, short, long, fps = CONVERSION_PRESETS[preset]
+    factor = min(short / min(source.width, source.height), long / max(source.width, source.height))
+    return EnhancePlan(
+        source=source,
+        target_width=even(source.width * factor),
+        target_height=even(source.height * factor),
+        target_fps=float(fps),
+        fps_ratio=Fraction(fps / source.fps).limit_denominator(100000),
     )

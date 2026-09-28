@@ -22,7 +22,7 @@ from urllib.parse import parse_qs, urlsplit
 import yt_dlp
 from yt_dlp.utils import DownloadCancelled, DownloadError, ExtractorError, FormatSorter
 
-from . import deviantart
+from . import deviantart, fastvideosave
 from .config import Settings
 from .cookies import CookieSource, apply_cookie_source_to_opts, inject_cookies
 from .media import CancelToken, JobCancelled
@@ -149,6 +149,7 @@ class ExtractResult:
     title: str | None
     uploader: str | None
     messages: list[str] = field(default_factory=list)
+    provider: str | None = None
 
 
 class _CapturingLogger:
@@ -177,7 +178,7 @@ class _CapturingLogger:
         self._record("warning", msg)
 
     def error(self, msg: str) -> None:
-        self._record("error", msg)
+        self._record("error", msg if str(msg).startswith("ERROR:") else f"ERROR: {msg}")
 
 
 def resolve_share_url(url: str, allowed_domains, timeout: float = 15) -> MediaURL:
@@ -314,6 +315,8 @@ def classify_error(message: str) -> tuple[str, str]:
     text = re.sub(r"^ERROR:\s*", "", message.strip())
     text = re.sub(r"^\[[^\]]+\]\s*(?:[\w-]+:\s*)?", "", text)
     lower = text.lower()
+    if "isn't available to everyone" in lower or "can't be seen by certain audiences" in lower:
+        return "audience_restricted", text
     if "not a bot" in lower or "sign in to confirm" in lower:
         return "bot_check", text
     if (
@@ -356,11 +359,27 @@ def friendly_error(
     name = info.name
     site = info.cookie_domain.lstrip(".")
     kind, text = classify_error(message)
+    if kind == "audience_restricted":
+        access = "this server's site login" if authenticated else "anonymous requests"
+        return (
+            f"{name} restricts this post to certain audiences and has not made it available "
+            f"to {access}. The platform did not specify which audience rule applies. "
+            "This is not an upscaling error. If you already have the video and permission "
+            "to use it, use Upload & convert."
+        )
     if kind == "login":
         if authenticated:
             return (
                 f"{name} rejected the session cookie (expired, or the account was challenged). "
                 f"Log in to {site} again and paste a fresh `{info.login_cookie}` cookie."
+            )
+        if platform == "instagram" and not requires_login:
+            return (
+                "Instagram did not provide this post to anonymous requests. It may require "
+                "a site login, or Instagram may be limiting access from this server. Try again "
+                "later or upload the video directly. This is an Instagram restriction, not "
+                "a website password requirement. Optional: use your own sessionid cookie "
+                "under Advanced for content you are permitted to access."
             )
         hint = "Stories" if requires_login else "This content"
         return (
@@ -422,7 +441,47 @@ def download(
     job_dir.mkdir(parents=True, exist_ok=True)
     if target.platform == "deviantart":
         return download_deviantart(target, job_dir, cookie_source, cancel, on_progress)
-    return download_with_ytdlp(target, job_dir, settings, cookie_source, cancel, on_progress)
+    try:
+        return download_with_ytdlp(target, job_dir, settings, cookie_source, cancel, on_progress)
+    except ExtractError as exc:
+        if not (
+            settings.fastvideosave_enabled
+            and target.platform == "instagram"
+            and target.kind in {"post", "reel", "igtv"}
+            and not cookie_source.authenticated
+            and exc.kind not in {"private", "too_long", "unsupported"}
+        ):
+            raise
+        cancel.check()
+        log.info("Instagram %s; trying the configured FastVideoSave fallback", exc.kind)
+        if on_progress:
+            on_progress(0.0, "Instagram direct fetch failed; contacting FastVideoSave")
+        try:
+            urls = fastvideosave.fetch_media_urls(target.url, settings, cancel)
+            paths = fastvideosave.download_media(urls, job_dir, settings, cancel, on_progress)
+        except fastvideosave.FastVideoSaveError as fallback:
+            raise ExtractError(
+                f"Instagram direct download failed. FastVideoSave fallback: {fallback}",
+                "fallback",
+            ) from fallback
+        code = target.url.rstrip("/").rsplit("/", 1)[-1]
+        return ExtractResult(
+            items=[
+                _to_item(
+                    {
+                        "id": f"{code}-{index + 1}" if len(paths) > 1 else code,
+                        "title": f"Instagram {code}",
+                        "webpage_url": target.url,
+                        "format_id": "fastvideosave",
+                    },
+                    path,
+                )
+                for index, path in enumerate(paths)
+            ],
+            title=f"Instagram {code}",
+            uploader=None,
+            provider="FastVideoSave",
+        )
 
 
 def download_deviantart(

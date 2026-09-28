@@ -6,6 +6,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     DATA_DIR=/data \
     HOST=0.0.0.0 \
     PORT=8000 \
+    PLAYWRIGHT_BROWSERS_PATH=/opt/playwright \
     NODE_VERSION=22.23.3
 
 # ffmpeg for downloads/enhancement; Node.js >= 22 is yt-dlp's JavaScript runtime for YouTube.
@@ -23,7 +24,9 @@ RUN apt-get update \
 
 WORKDIR /app
 COPY requirements.txt ./
-RUN pip install -r requirements.txt
+RUN pip install -r requirements.txt \
+    && python -m playwright install --with-deps chromium \
+    && chmod -R a+rX /opt/playwright
 
 COPY app ./app
 COPY static ./static
@@ -38,6 +41,6 @@ VOLUME ["/data"]
 EXPOSE 8000
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s \
-    CMD python -c "import os,urllib.request,sys; urllib.request.urlopen(f'http://127.0.0.1:{os.environ.get(\"PORT\",\"8000\")}/api/capabilities', timeout=4); sys.exit(0)" || exit 1
+    CMD python -m app.healthcheck || exit 1
 
 CMD ["sh", "-c", "uvicorn app.main:app --host ${HOST} --port ${PORT} --proxy-headers --forwarded-allow-ips='*'"]
