@@ -1,0 +1,12 @@
+.git
+.venv
+venv
+data
+tests
+.env
+.pytest_cache
+.ruff_cache
+__pycache__
+*.pyc
+*.mp4
+docker-compose.yml
