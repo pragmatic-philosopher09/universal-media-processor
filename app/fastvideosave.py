@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import time
 import urllib.error
 import urllib.request
@@ -14,6 +15,7 @@ from .config import Settings
 from .media import CancelToken, JobCancelled
 
 BROWSER_HOSTS = {"fastvideosave.net", "api.videodropper.app", "challenges.cloudflare.com"}
+log = logging.getLogger(__name__)
 
 
 class FastVideoSaveError(RuntimeError):
@@ -63,63 +65,128 @@ def browser_request_allowed(url: str, resource_type: str) -> bool:
 
 
 def fetch_media_urls(url: str, settings: Settings, cancel: CancelToken) -> list[str]:
+    from playwright.sync_api import Error, TimeoutError
+
+    for attempt in range(2):
+        cancel.check()
+        try:
+            return _fetch_media_urls_once(url, settings, cancel)
+        except Error as exc:
+            cancel.check()
+            text = str(exc)
+            if isinstance(exc, TimeoutError):
+                reason = "timeout"
+                message = "FastVideoSave timed out. Try again later."
+            elif any(
+                marker in text
+                for marker in (
+                    "net::ERR_CONNECTION_",
+                    "net::ERR_NETWORK_CHANGED",
+                    "net::ERR_INTERNET_DISCONNECTED",
+                    "net::ERR_NAME_NOT_RESOLVED",
+                    "net::ERR_TIMED_OUT",
+                    "net::ERR_EMPTY_RESPONSE",
+                    "net::ERR_HTTP2_PROTOCOL_ERROR",
+                    "net::ERR_QUIC_PROTOCOL_ERROR",
+                )
+            ):
+                reason = "network"
+                message = (
+                    "Could not connect to FastVideoSave from this server. Check its network "
+                    "connection or try again later."
+                )
+            elif (
+                "Target page, context or browser has been closed" in text or "Page crashed" in text
+            ):
+                reason = "browser_closed"
+                message = (
+                    "The FastVideoSave browser closed or crashed while retrieving media. "
+                    "Try again later; the server may be low on memory."
+                )
+            else:
+                log.warning("FastVideoSave browser request failed (unclassified Playwright error)")
+                raise FastVideoSaveError(
+                    "The FastVideoSave browser request failed. Its page may have changed "
+                    "or rejected the request. Try again later or use Upload & convert."
+                ) from exc
+            # Do not log raw Playwright errors: they can contain signed media URLs.
+            log.warning("FastVideoSave attempt %s/2 failed (%s)", attempt + 1, reason)
+            if attempt == 1:
+                raise FastVideoSaveError(message) from exc
+    raise AssertionError("Unreachable")
+
+
+def _fetch_media_urls_once(url: str, settings: Settings, cancel: CancelToken) -> list[str]:
     # Imported only when enabled, so ordinary downloads do not need a browser installation.
-    from playwright.sync_api import Error, TimeoutError, sync_playwright
+    from playwright.sync_api import Error, sync_playwright
 
     cancel.check()
-    try:
-        with sync_playwright() as playwright:
+    with sync_playwright() as playwright:
+        try:
             browser = playwright.chromium.launch(
                 headless=True, channel=settings.fastvideosave_browser_channel
             )
-            try:
-                context = browser.new_context(service_workers="block")
-                context.route(
-                    "**/*",
-                    lambda route: (
-                        route.continue_()
-                        if browser_request_allowed(route.request.url, route.request.resource_type)
-                        else route.abort()
-                    ),
-                )
-                page = context.new_page()
-                page.set_default_timeout(15000)
-                section = "stories" if urlsplit(url).path.startswith("/stories/") else ""
-                page.goto(
-                    f"https://fastvideosave.net/{section}?" + urlencode({"url": url}),
-                    wait_until="domcontentloaded",
-                )
-                deadline = time.monotonic() + 45
-                while time.monotonic() < deadline:
-                    cancel.check()
-                    sources = page.locator(
-                        'video source[src], video[src], a[aria-label="Save Image"]'
-                    ).evaluate_all("(els) => els.map(e => e.href || e.src).filter(Boolean)")
-                    if sources:
-                        urls = list(dict.fromkeys(media_url(src) for src in sources))
-                        if len(urls) > 50:
-                            raise FastVideoSaveError("FastVideoSave returned too many media items.")
-                        return urls
-                    if page.get_by_text("Oops! Something went wrong", exact=True).count():
-                        raise FastVideoSaveError(
-                            "FastVideoSave could not retrieve this media. The account may be "
-                            "private, the story expired, or the provider temporarily unavailable."
-                        )
-                    page.wait_for_timeout(250)
+        except Error as exc:
+            cancel.check()
+            text = str(exc)
+            if "Executable doesn't exist" in text or (
+                "distribution" in text and "is not found" in text
+            ):
+                log.warning("FastVideoSave browser launch failed (browser missing)")
                 raise FastVideoSaveError(
-                    "FastVideoSave did not return media within 45 seconds. Its service may "
-                    "be unavailable, require a browser check, or not support this post. "
-                    "Try later or use Upload & convert."
-                )
-            finally:
+                    "The configured FastVideoSave browser is not installed on the server. "
+                    "Install Playwright Chromium (python -m playwright install chromium) "
+                    "and unset FASTVIDEOSAVE_BROWSER_CHANNEL, or install the configured channel."
+                ) from exc
+            if "Host system is missing dependencies" in text:
+                log.warning("FastVideoSave browser launch failed (system dependencies missing)")
+                raise FastVideoSaveError(
+                    "The FastVideoSave browser is missing system libraries. The server "
+                    "operator must run python -m playwright install --with-deps chromium."
+                ) from exc
+            raise
+        try:
+            context = browser.new_context(service_workers="block")
+            context.route(
+                "**/*",
+                lambda route: (
+                    route.continue_()
+                    if browser_request_allowed(route.request.url, route.request.resource_type)
+                    else route.abort()
+                ),
+            )
+            page = context.new_page()
+            page.set_default_timeout(15000)
+            section = "stories" if urlsplit(url).path.startswith("/stories/") else ""
+            page.goto(
+                f"https://fastvideosave.net/{section}?" + urlencode({"url": url}),
+                wait_until="domcontentloaded",
+            )
+            deadline = time.monotonic() + 45
+            while time.monotonic() < deadline:
+                cancel.check()
+                sources = page.locator(
+                    'video source[src], video[src], a[aria-label="Save Image"]'
+                ).evaluate_all("(els) => els.map(e => e.href || e.src).filter(Boolean)")
+                if sources:
+                    urls = list(dict.fromkeys(media_url(src) for src in sources))
+                    if len(urls) > 50:
+                        raise FastVideoSaveError("FastVideoSave returned too many media items.")
+                    return urls
+                if page.get_by_text("Oops! Something went wrong", exact=True).count():
+                    raise FastVideoSaveError(
+                        "FastVideoSave could not retrieve this media. The account may be "
+                        "private, the story expired, or the provider temporarily unavailable."
+                    )
+                page.wait_for_timeout(250)
+            raise FastVideoSaveError(
+                "FastVideoSave did not return media within 45 seconds. Its service may "
+                "be unavailable, require a browser check, or not support this post. "
+                "Try later or use Upload & convert."
+            )
+        finally:
+            if browser.is_connected():
                 browser.close()
-    except TimeoutError as exc:
-        raise FastVideoSaveError("FastVideoSave timed out. Try again later.") from exc
-    except Error as exc:
-        raise FastVideoSaveError(
-            "The FastVideoSave browser failed. The server needs Playwright Chromium "
-            "(python -m playwright install chromium), or a configured Chrome channel."
-        ) from exc
 
 
 class _CDNRedirectHandler(urllib.request.HTTPRedirectHandler):

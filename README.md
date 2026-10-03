@@ -142,7 +142,13 @@ of access or of the highest source rendition. Photo download links and video sou
 collected in page order and deduplicated; video preview thumbnails are not treated as photos.
 Existing 4K60 conversion works on the retrieved MP4s.
 
-Metadata retrieval is bounded to roughly one minute. Downloads share `MAX_UPLOAD_MB`
+Metadata retrieval is bounded to roughly one minute per attempt. Transient browser
+connection errors, navigation timeouts and browser crashes get one retry in a fresh
+browser context (at most two attempts). Missing browser installations or system
+dependencies are reported separately; provider rejections and unsupported media are
+not retried. Runtime errors no longer instruct users to install Chromium when it is
+already running. Logs record failure categories, not raw errors with signed media URLs.
+Downloads share `MAX_UPLOAD_MB`
 as an aggregate size cap and are subject to `MAX_SOURCE_DURATION_SECONDS` after probing.
 Only HTTPS Instagram/Facebook CDN media addresses and redirects are accepted. Browser
 requests are limited to the provider and its browser-check host; ads are blocked.

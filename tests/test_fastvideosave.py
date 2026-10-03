@@ -337,3 +337,104 @@ def test_provider_error_is_not_a_success(browser):
     with pytest.raises(fastvideosave.FastVideoSaveError, match="private"):
         fastvideosave.fetch_media_urls(POST, Settings(), CancelToken())
     browser.close.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        "net::ERR_CONNECTION_RESET at https://fastvideosave.net/",
+        "net::ERR_NETWORK_CHANGED",
+        "Target page, context or browser has been closed",
+        "Page crashed",
+    ],
+)
+def test_transient_browser_failure_retries_once(browser, error, caplog):
+    from playwright.sync_api import Error
+
+    page = browser.new_context.return_value.new_page.return_value
+    page.goto.side_effect = [Error(error + "?private-token=do-not-log"), None]
+    page.locator.return_value.evaluate_all.return_value = [CDN]
+    assert fastvideosave.fetch_media_urls(POST, Settings(), CancelToken()) == [CDN]
+    assert page.goto.call_count == 2
+    assert browser.new_context.call_count == 2
+    assert browser.close.call_count == 2
+    assert "attempt 1/2 failed" in caplog.text
+    assert "do-not-log" not in caplog.text
+
+
+@pytest.mark.parametrize(
+    "error,expected",
+    [
+        ("net::ERR_CONNECTION_RESET", "Could not connect"),
+        ("Page crashed", "closed or crashed"),
+    ],
+)
+def test_transient_browser_failure_stops_after_second_attempt(browser, error, expected):
+    from playwright.sync_api import Error
+
+    page = browser.new_context.return_value.new_page.return_value
+    page.goto.side_effect = Error(error)
+    with pytest.raises(fastvideosave.FastVideoSaveError, match=expected) as failure:
+        fastvideosave.fetch_media_urls(POST, Settings(), CancelToken())
+    assert "install" not in str(failure.value)
+    assert page.goto.call_count == 2
+    assert browser.close.call_count == 2
+
+
+def test_navigation_timeout_retried_but_not_missing_browser(browser):
+    from playwright.sync_api import TimeoutError
+
+    page = browser.new_context.return_value.new_page.return_value
+    page.goto.side_effect = TimeoutError("Page.goto: Timeout 15000ms exceeded")
+    with pytest.raises(fastvideosave.FastVideoSaveError, match="timed out"):
+        fastvideosave.fetch_media_urls(POST, Settings(), CancelToken())
+    assert page.goto.call_count == 2
+
+
+def test_unclassified_runtime_error_does_not_suggest_installation(browser):
+    from playwright.sync_api import Error
+
+    page = browser.new_context.return_value.new_page.return_value
+    page.locator.return_value.evaluate_all.side_effect = Error("Execution context was destroyed")
+    with pytest.raises(fastvideosave.FastVideoSaveError, match="browser request failed") as failure:
+        fastvideosave.fetch_media_urls(POST, Settings(), CancelToken())
+    assert "install" not in str(failure.value)
+    page.goto.assert_called_once()
+    browser.close.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    "error,expected",
+    [
+        ("Executable doesn't exist at /missing/chromium", "not installed"),
+        ("Chromium distribution 'chrome' is not found", "not installed"),
+        ("Host system is missing dependencies to run browsers.", "system libraries"),
+    ],
+)
+def test_launch_setup_errors_are_specific_and_not_retried(monkeypatch, error, expected):
+    from playwright import sync_api
+
+    manager = MagicMock()
+    launch = manager.__enter__.return_value.chromium.launch
+    launch.side_effect = sync_api.Error(error)
+    monkeypatch.setattr(sync_api, "sync_playwright", lambda: manager)
+    with pytest.raises(fastvideosave.FastVideoSaveError, match=expected):
+        fastvideosave.fetch_media_urls(POST, Settings(), CancelToken())
+    launch.assert_called_once()
+
+
+def test_cancellation_during_failure_prevents_retry(browser):
+    from playwright.sync_api import Error
+
+    token = CancelToken()
+    page = browser.new_context.return_value.new_page.return_value
+
+    def disconnected(*args, **kwargs):
+        token.cancel()
+        raise Error("net::ERR_CONNECTION_RESET")
+
+    page.goto.side_effect = disconnected
+    with pytest.raises(JobCancelled):
+        fastvideosave.fetch_media_urls(POST, Settings(), token)
+    page.goto.assert_called_once()
+    browser.close.assert_called_once()
