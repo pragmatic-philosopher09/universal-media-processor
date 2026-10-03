@@ -101,30 +101,58 @@ for videos you already have.
 
 ### Optional FastVideoSave fallback
 
-Set `FASTVIDEOSAVE_ENABLED=1` to retry failed anonymous Instagram post/reel/IGTV fetches
-through FastVideoSave's public website. Install its browser with
+Set `FASTVIDEOSAVE_ENABLED=1` to retrieve public Instagram photos, video posts, carousels
+and active stories through FastVideoSave's public website. Reels/IGTV still try direct
+extraction first, then use this provider if needed. Install its browser with
 `python -m playwright install chromium` (already included in the Docker image), or set
 `FASTVIDEOSAVE_BROWSER_CHANNEL=chrome` to use an installed Chrome.
 
 The app keeps its own UI: the server opens a fresh, temporary browser context, submits
-only the normalized public Instagram URL, and downloads the returned MP4s directly from
+only the normalized public Instagram URL, and downloads the returned MP4/JPEG/PNG/WebP files directly from
 Instagram's CDN. No personal browser profile, Instagram cookies, Apify token or HikerAPI
-token is shared. The UI discloses this handoff and labels fallback results. Successful
-direct downloads do not contact FastVideoSave. Authenticated requests, private-account
-errors and stories are not routed through this fallback.
+token is shared. The UI discloses this handoff and labels provider results. Anonymous
+`/p/` posts use the provider first so photo and mixed-carousel items are not silently
+dropped by the video-only direct extractor. If it fails, direct extraction is attempted,
+with an explicit warning that photos may be missing. Authenticated requests and highlights
+stay on the existing direct path; no personal cookies are sent to this provider.
+
+Paste `https://www.instagram.com/stories/username/` for available active stories, or a
+specific `https://www.instagram.com/stories/username/story-id/` link. Plain usernames and
+profile-page URLs are not story inputs. Private, expired and unavailable stories may fail.
+This is not access to an account's story archive. The provider may return fewer items
+than Instagram shows; availability is not guaranteed.
+
+Each photo has **Download photo** and **Upscale image to 4K** controls. Upscaling reuses
+the downloaded image, preserves the original, and produces a PNG bounded by 3840x2160
+(2160x3840 portrait; 2160x2160 square), preserving aspect ratio without cropping.
+Larger sources are not reduced. Photos have no frame rate: 60 fps applies only to videos.
+This uses classical Lanczos scaling/sharpening, not AI.
+
+Videos expose whether the retrieved file contains an audio track. If it does not, a
+warning explains that the original Instagram post may still have sound. Re-fetching
+can help when the provider later supplies a complete version, but cannot be guaranteed.
+Audio supplied by the provider is retained during download and preserved during conversion;
+upscaling cannot recreate missing audio.
 
 This is an **unofficial, optional integration**, not a supported API or an affiliation.
 Review the provider's terms and obtain any permission needed for your deployment. The
 provider sees submitted URLs and the server IP; its availability, limits, browser
 checks and page structure can change. Challenges are not bypassed. There is no guarantee
-of access or of the highest source rendition. Video items only are returned; photo
-carousel items are omitted. Existing 4K60 conversion works on the retrieved MP4s.
+of access or of the highest source rendition. Photo download links and video sources are
+collected in page order and deduplicated; video preview thumbnails are not treated as photos.
+Existing 4K60 conversion works on the retrieved MP4s.
 
 Metadata retrieval is bounded to roughly one minute. Downloads share `MAX_UPLOAD_MB`
 as an aggregate size cap and are subject to `MAX_SOURCE_DURATION_SECONDS` after probing.
 Only HTTPS Instagram/Facebook CDN media addresses and redirects are accepted. Browser
 requests are limited to the provider and its browser-check host; ads are blocked.
 Disabling `FASTVIDEOSAVE_ENABLED` restores the direct-only path.
+
+Image conversion API: `POST /api/jobs/{id}/files/{index}/upscale?resolution=2160p`
+(`1440p` is also accepted). It uses the normal job status/download/cancellation endpoints,
+per-IP concurrency limit, enhancement enablement and file expiry. An independent hard link
+keeps the source alive if the original job expires during conversion. Uploaded-video
+conversion remains unchanged; this image endpoint operates on already-downloaded images.
 
 ### Convert a video from your device
 

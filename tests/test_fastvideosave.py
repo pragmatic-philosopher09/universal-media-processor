@@ -15,6 +15,7 @@ from app.urls import DEFAULT_ALLOWED_DOMAINS, normalize_url
 
 CDN = "https://scontent.cdninstagram.com/video.mp4?signature=example"
 POST = "https://www.instagram.com/p/DWtEagdgB6n/"
+REEL = "https://www.instagram.com/reel/DWtEagdgB6n/"
 MP4 = b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 100
 
 
@@ -90,10 +91,11 @@ def test_fallback_routing(monkeypatch, tmp_path):
     [
         (POST, False, False, "login"),
         (POST, True, True, "login"),
-        (POST, True, False, "private"),
-        (POST, True, False, "too_long"),
-        (POST, True, False, "unsupported"),
-        ("https://www.instagram.com/stories/test/123/", True, False, "login"),
+        (REEL, True, False, "private"),
+        (REEL, True, False, "too_long"),
+        (REEL, True, False, "unsupported"),
+        ("https://www.instagram.com/stories/test/123/", False, False, "login"),
+        ("https://www.instagram.com/stories/test/123/", True, True, "login"),
         ("https://www.youtube.com/watch?v=abcdefghi12", True, False, "bot_check"),
     ],
 )
@@ -124,7 +126,7 @@ def test_successful_direct_request_never_reaches_provider(monkeypatch, tmp_path)
     monkeypatch.setattr(fastvideosave, "fetch_media_urls", fetch)
     assert (
         extractor.download(
-            normalize_url(POST, DEFAULT_ALLOWED_DOMAINS),
+            normalize_url(REEL, DEFAULT_ALLOWED_DOMAINS),
             tmp_path,
             Settings(fastvideosave_enabled=True),
             CookieSource("none"),
@@ -169,6 +171,7 @@ def browser(monkeypatch):
 
     manager = MagicMock()
     browser = manager.__enter__.return_value.chromium.launch.return_value
+    browser.new_context.return_value.new_page.return_value.get_by_text.return_value.count.return_value = 0
     monkeypatch.setattr(playwright.sync_api, "sync_playwright", lambda: manager)
     return browser
 
@@ -193,7 +196,7 @@ def test_browser_cancellation_closes_browser(browser):
 
 def test_browser_timeout_closes_browser(browser, monkeypatch):
     monkeypatch.setattr(fastvideosave.time, "monotonic", iter([0, 50]).__next__)
-    with pytest.raises(fastvideosave.FastVideoSaveError, match="did not return a video"):
+    with pytest.raises(fastvideosave.FastVideoSaveError, match="did not return media"):
         fastvideosave.fetch_media_urls(POST, Settings(), CancelToken())
     browser.close.assert_called_once()
 
@@ -222,7 +225,7 @@ def test_download_is_cookie_free(monkeypatch, tmp_path):
 @pytest.mark.parametrize(
     "content,limit,error",
     [
-        (b"", 1024, "empty video"),
+        (b"", 1024, "empty media"),
         (b"<html>Error</html>", 1024, "not an MP4"),
         (MP4, 10, "size limit"),
     ],
@@ -250,3 +253,87 @@ def test_cancelled_download_removes_partial_files(monkeypatch, tmp_path):
     with pytest.raises(JobCancelled):
         fastvideosave.download_media([CDN], tmp_path, Settings(), token, lambda *_: token.cancel())
     assert not list(tmp_path.iterdir())
+
+
+@pytest.mark.parametrize(
+    "header,ext",
+    [
+        (b"\xff\xd8\xff" + b"\x00" * 20, "jpg"),
+        (b"\x89PNG\r\n\x1a\n" + b"\x00" * 20, "png"),
+        (b"RIFF\x00\x00\x00\x00WEBP" + b"\x00" * 20, "webp"),
+        (MP4, "mp4"),
+    ],
+)
+def test_media_types_detected_from_bytes(monkeypatch, tmp_path, header, ext):
+    fake_opener(monkeypatch, header)
+    paths = fastvideosave.download_media([CDN], tmp_path, Settings(), CancelToken())
+    assert paths[0].suffix == "." + ext
+    assert paths[0].read_bytes() == header
+    assert not list(tmp_path.glob("*.part"))
+
+
+def test_photo_story_browser_routing_and_thumbnail_exclusion(browser):
+    page = browser.new_context.return_value.new_page.return_value
+    image = "https://scontent.cdninstagram.com/photo.jpg"
+    page.locator.return_value.evaluate_all.return_value = [CDN, image, image]
+    story = "https://www.instagram.com/stories/nasa/123/"
+    assert fastvideosave.fetch_media_urls(story, Settings(), CancelToken()) == [CDN, image]
+    assert page.goto.call_args.args[0].startswith("https://fastvideosave.net/stories?")
+    selector = page.locator.call_args.args[0]
+    assert 'a[aria-label="Save Image"]' in selector
+    assert "img" not in selector
+
+
+@pytest.mark.parametrize("url", [POST, "https://www.instagram.com/stories/nasa/"])
+def test_provider_first_keeps_mixed_media(monkeypatch, tmp_path, url):
+    direct = MagicMock()
+    monkeypatch.setattr(extractor, "download_with_ytdlp", direct)
+    monkeypatch.setattr(fastvideosave, "fetch_media_urls", MagicMock(return_value=[CDN, CDN]))
+    monkeypatch.setattr(
+        fastvideosave,
+        "download_media",
+        MagicMock(
+            return_value=[
+                tmp_path / "src-fastvideosave-1.jpg",
+                tmp_path / "src-fastvideosave-2.mp4",
+            ]
+        ),
+    )
+    result = extractor.download(
+        normalize_url(url, DEFAULT_ALLOWED_DOMAINS),
+        tmp_path,
+        Settings(fastvideosave_enabled=True),
+        CookieSource("none"),
+        CancelToken(),
+    )
+    direct.assert_not_called()
+    assert [i.is_image for i in result.items] == [True, False]
+    assert len({i.media_id for i in result.items}) == 2
+
+
+def test_provider_failure_warns_about_direct_only_results(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        fastvideosave,
+        "fetch_media_urls",
+        MagicMock(side_effect=fastvideosave.FastVideoSaveError("unavailable")),
+    )
+    direct_result = extractor.ExtractResult([], None, None)
+    monkeypatch.setattr(extractor, "download_with_ytdlp", lambda *args: direct_result)
+    result = extractor.download(
+        normalize_url(POST, DEFAULT_ALLOWED_DOMAINS),
+        tmp_path,
+        Settings(fastvideosave_enabled=True),
+        CookieSource("none"),
+        CancelToken(),
+    )
+    assert result is direct_result
+    assert "photos" in result.warnings[0]
+
+
+def test_provider_error_is_not_a_success(browser):
+    page = browser.new_context.return_value.new_page.return_value
+    page.locator.return_value.evaluate_all.return_value = []
+    page.get_by_text.return_value.count.return_value = 1
+    with pytest.raises(fastvideosave.FastVideoSaveError, match="private"):
+        fastvideosave.fetch_media_urls(POST, Settings(), CancelToken())
+    browser.close.assert_called_once()

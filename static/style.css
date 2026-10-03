@@ -65,6 +65,7 @@ h1 {
 form.card { display: flex; flex-direction: column; gap: 24px; }
 .section-title { margin: 0; font-size: 21px; font-weight: 600; letter-spacing: -0.02em; }
 #upload-form p { margin: 8px 0 0; }
+#upload-file-hint { overflow-wrap: anywhere; }
 input[type="file"] {
   width: 100%; min-width: 0; padding: 18px; font: inherit;
   border: 1px dashed var(--line-strong); border-radius: 8px; background: var(--bg);
@@ -204,6 +205,7 @@ button, .primary {
   display: block;
 }
 .preview img[hidden], .preview video[hidden] { display: none; }
+.preview img { object-fit: contain; }
 .result-body { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
 .result-kind { margin: 0; font-size: 12px; font-weight: 500; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); }
 .result.enhanced .result-kind, .result.converted .result-kind { color: var(--ok); }
@@ -244,6 +246,7 @@ button, .primary {
   z-index: 50;
   max-width: min(92vw, 520px);
   text-align: center;
+  overflow-wrap: anywhere;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.16);
 }
 .toast b { font-weight: 600; }

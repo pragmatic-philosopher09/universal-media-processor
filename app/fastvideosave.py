@@ -84,24 +84,30 @@ def fetch_media_urls(url: str, settings: Settings, cancel: CancelToken) -> list[
                 )
                 page = context.new_page()
                 page.set_default_timeout(15000)
+                section = "stories" if urlsplit(url).path.startswith("/stories/") else ""
                 page.goto(
-                    "https://fastvideosave.net/?" + urlencode({"url": url}),
+                    f"https://fastvideosave.net/{section}?" + urlencode({"url": url}),
                     wait_until="domcontentloaded",
                 )
                 deadline = time.monotonic() + 45
                 while time.monotonic() < deadline:
                     cancel.check()
-                    sources = page.locator("video source[src], video[src]").evaluate_all(
-                        "(els) => els.map(e => e.src).filter(Boolean)"
-                    )
+                    sources = page.locator(
+                        'video source[src], video[src], a[aria-label="Save Image"]'
+                    ).evaluate_all("(els) => els.map(e => e.href || e.src).filter(Boolean)")
                     if sources:
                         urls = list(dict.fromkeys(media_url(src) for src in sources))
                         if len(urls) > 50:
-                            raise FastVideoSaveError("FastVideoSave returned too many videos.")
+                            raise FastVideoSaveError("FastVideoSave returned too many media items.")
                         return urls
+                    if page.get_by_text("Oops! Something went wrong", exact=True).count():
+                        raise FastVideoSaveError(
+                            "FastVideoSave could not retrieve this media. The account may be "
+                            "private, the story expired, or the provider temporarily unavailable."
+                        )
                     page.wait_for_timeout(250)
                 raise FastVideoSaveError(
-                    "FastVideoSave did not return a video within 45 seconds. Its service may "
+                    "FastVideoSave did not return media within 45 seconds. Its service may "
                     "be unavailable, require a browser check, or not support this post. "
                     "Try later or use Upload & convert."
                 )
@@ -122,6 +128,18 @@ class _CDNRedirectHandler(urllib.request.HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
+def media_extension(header: bytes) -> str:
+    if header[4:8] == b"ftyp":
+        return "mp4"
+    if header.startswith(b"\xff\xd8\xff"):
+        return "jpg"
+    if header.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "png"
+    if header.startswith(b"RIFF") and header[8:12] == b"WEBP":
+        return "webp"
+    raise FastVideoSaveError("Provider download is not an MP4, JPEG, PNG or WebP file.")
+
+
 def download_media(
     urls: list[str],
     job_dir: Path,
@@ -129,6 +147,8 @@ def download_media(
     cancel: CancelToken,
     on_progress: Callable[[float, str], None] | None = None,
 ) -> list[Path]:
+    if not urls or len(urls) > 50:
+        raise FastVideoSaveError("FastVideoSave must return between 1 and 50 media items.")
     paths: list[Path] = []
     total_size = 0
     deadline = time.monotonic() + 120
@@ -136,7 +156,7 @@ def download_media(
     try:
         for index, url in enumerate(urls):
             cancel.check()
-            path = job_dir / f"src-fastvideosave-{index + 1}.mp4"
+            path = job_dir / f"src-fastvideosave-{index + 1}.part"
             paths.append(path)
             request = urllib.request.Request(
                 validate_cdn_url(url),
@@ -152,8 +172,8 @@ def download_media(
                     chunk = response.read(256 * 1024)
                     if not chunk:
                         break
-                    if not size and b"ftyp" not in chunk[:32]:
-                        raise FastVideoSaveError("FastVideoSave's download was not an MP4 video.")
+                    if not size:
+                        extension = media_extension(chunk[:32])
                     size += len(chunk)
                     total_size += len(chunk)
                     if total_size > settings.max_upload_bytes:
@@ -164,11 +184,14 @@ def download_media(
                     if on_progress:
                         on_progress(
                             index / len(urls),
-                            f"Downloading FastVideoSave video {index + 1}/{len(urls)} "
+                            f"Downloading FastVideoSave media {index + 1}/{len(urls)} "
                             f"({size // 1024} KiB)",
                         )
                 if not size:
-                    raise FastVideoSaveError("FastVideoSave returned an empty video.")
+                    raise FastVideoSaveError("FastVideoSave returned an empty media file.")
+            final = path.with_suffix("." + extension)
+            path.rename(final)
+            paths[-1] = final
         return paths
     except (OSError, HTTPException, ValueError, FastVideoSaveError, JobCancelled) as exc:
         for path in paths:

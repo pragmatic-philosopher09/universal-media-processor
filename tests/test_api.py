@@ -102,12 +102,17 @@ def test_fallback_provenance_and_source_limit(settings, fake_download, monkeypat
         )
         with TestClient(create_app(configured)) as client:
             assert client.get("/api/capabilities").json()["instagram_fallback"] == "fastvideosave"
+            assert client.get("/api/capabilities").json()["instagram_public_media"] == {
+                "photos": True,
+                "stories": True,
+            }
             created = client.post("/api/jobs", json={"url": REEL, "mode": "original"}).json()
             job = wait_for(client, created["id"])
             assert job["status"] == expected
             assert job["source_provider"] == "FastVideoSave"
             assert any("FastVideoSave" in warning for warning in job["warnings"])
             if expected == "done":
+                assert job["outputs"][0]["has_audio"] is True
                 assert client.get(job["outputs"][0]["url"]).status_code == 200
             else:
                 assert "duration limit" in job["error"]
@@ -392,6 +397,122 @@ def test_conversion_rejects_images(client):
     response = client.post(original["outputs"][0]["url"] + "/convert")
     assert response.status_code == 400
     assert "not an image" in response.json()["detail"]
+
+
+@pytest.mark.parametrize(
+    "source_url",
+    [
+        "https://www.instagram.com/p/Photo123/",
+        "https://www.instagram.com/stories/nasa/123/",
+    ],
+)
+def test_instagram_image_upscale_reuses_file(settings, monkeypatch, tiny_image, source_url):
+    from dataclasses import replace
+    from unittest.mock import MagicMock
+
+    from app import fastvideosave
+
+    def save_media(urls, folder, settings, cancel, progress):
+        path = folder / "src-fastvideosave-1.png"
+        shutil.copyfile(tiny_image, path)
+        return [path]
+
+    fetch = MagicMock(return_value=["https://scontent.cdninstagram.com/photo.png"])
+    monkeypatch.setattr(fastvideosave, "fetch_media_urls", fetch)
+    monkeypatch.setattr(fastvideosave, "download_media", save_media)
+    with TestClient(create_app(replace(settings, fastvideosave_enabled=True))) as client:
+        response = client.post("/api/jobs", json={"url": source_url, "mode": "original"})
+        original = wait_for(client, response.json()["id"])
+        assert original["status"] == "done", original
+        output = original["outputs"][0]
+        assert output["is_image"] and output["media_type"] == "image/png"
+        assert not any("no audio" in warning for warning in original["warnings"])
+        old = client.get(output["url"]).content
+        response = client.post(output["url"] + "/upscale?resolution=2160p")
+        assert response.status_code == 202
+        assert client.get(output["url"]).content == old
+        client.delete("/api/jobs/" + original["id"])
+        upscaled = wait_for(client, response.json()["id"])
+        assert upscaled["status"] == "done", upscaled
+        assert upscaled["image_resolution"] == "2160p"
+        assert upscaled["options"]["mode"] == "upscale_image"
+        result = upscaled["outputs"][0]
+        assert (result["width"], result["height"]) == (2880, 2160)
+        assert result["fps"] == 0 and result["is_image"]
+        assert result["download_name"].endswith("_2160p.png")
+        assert client.get(result["url"]).headers["content-type"] == "image/png"
+        assert not (settings.jobs_dir / upscaled["id"] / "source.image").exists()
+        fetch.assert_called_once()
+
+
+def test_image_upscale_rejects_invalid_sources(client):
+    assert client.post("/api/jobs/missing/files/0/upscale").status_code == 404
+    response = client.post("/api/jobs", json={"url": REEL, "mode": "original"})
+    original = wait_for(client, response.json()["id"])
+    url = original["outputs"][0]["url"]
+    assert client.post(url + "/upscale").status_code == 400
+    assert client.post(url + "/upscale?resolution=8k").status_code == 422
+    assert client.post(f"/api/jobs/{original['id']}/files/-1/upscale").status_code == 404
+
+
+def test_missing_audio_is_reported_not_invented(client, monkeypatch):
+    from dataclasses import replace
+
+    original_probe = jobs_module.ffprobe
+
+    async def silent_probe(*args, **kwargs):
+        info = await original_probe(*args, **kwargs)
+        return replace(info, acodec=None, has_audio=False)
+
+    monkeypatch.setattr(jobs_module, "ffprobe", silent_probe)
+    response = client.post("/api/jobs", json={"url": REEL, "mode": "original"})
+    result = wait_for(client, response.json()["id"])
+    assert result["status"] == "done"
+    assert result["outputs"][0]["has_audio"] is False
+    assert any("post may still have sound" in w for w in result["warnings"])
+
+
+def test_image_upscale_limits_expiry_and_cancellation(client, settings, tiny_image, monkeypatch):
+    import asyncio
+    from dataclasses import replace
+
+    from app.media import ffprobe
+
+    response = client.post("/api/jobs", json={"url": REEL, "mode": "original"})
+    original = wait_for(client, response.json()["id"])
+    manager = client.app.state.manager
+    output = manager.get(original["id"]).outputs[0]
+    output.path = output.path.with_suffix(".png")
+    shutil.copyfile(tiny_image, output.path)
+    output.info = asyncio.run(ffprobe(output.path, settings, local_image=True))
+    url = original["outputs"][0]["url"] + "/upscale"
+    manager.settings = replace(settings, enhancement_enabled=False)
+    assert client.post(url).status_code == 400
+    manager.settings = settings
+    reserved = [
+        manager.create_upload("pending.mp4", "720p30", "testclient")
+        for _ in range(settings.max_jobs_per_ip)
+    ]
+    assert client.post(url).status_code == 429
+    for job in reserved:
+        manager.delete(job.id)
+
+    async def wait_until_cancelled(*args, cancel, **kwargs):
+        while not cancel.cancelled:
+            await asyncio.sleep(0.01)
+        cancel.check()
+
+    monkeypatch.setattr(jobs_module, "enhance_image", wait_until_cancelled)
+    response = client.post(url)
+    assert response.status_code == 202
+    conversion_id = response.json()["id"]
+    client.delete("/api/jobs/" + conversion_id)
+    assert wait_for(client, conversion_id)["status"] == "cancelled"
+    assert not (settings.jobs_dir / conversion_id / "source.image").exists()
+    assert not (settings.jobs_dir / conversion_id / "upscaled.png").exists()
+    assert client.get(original["outputs"][0]["url"]).status_code == 200
+    output.path.unlink()
+    assert client.post(url).status_code == 410
 
 
 def test_conversion_respects_disabled_server(settings, fake_download):

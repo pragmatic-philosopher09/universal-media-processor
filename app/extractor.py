@@ -150,6 +150,7 @@ class ExtractResult:
     uploader: str | None
     messages: list[str] = field(default_factory=list)
     provider: str | None = None
+    warnings: list[str] = field(default_factory=list)
 
 
 class _CapturingLogger:
@@ -441,6 +442,32 @@ def download(
     job_dir.mkdir(parents=True, exist_ok=True)
     if target.platform == "deviantart":
         return download_deviantart(target, job_dir, cookie_source, cancel, on_progress)
+    provider_first = (
+        settings.fastvideosave_enabled
+        and target.platform == "instagram"
+        and target.kind in {"post", "story", "profile-stories"}
+        and not cookie_source.authenticated
+    )
+    if provider_first:
+        # yt-dlp drops still images from Instagram posts/carousels and stories.
+        try:
+            return download_instagram_media(target, job_dir, settings, cancel, on_progress)
+        except ExtractError as provider_error:
+            log.info("FastVideoSave retrieval failed; trying direct Instagram extraction")
+            try:
+                result = download_with_ytdlp(
+                    target, job_dir, settings, cookie_source, cancel, on_progress
+                )
+            except ExtractError as direct_error:
+                raise ExtractError(
+                    f"{provider_error} Direct Instagram retrieval also failed: {direct_error}",
+                    "fallback",
+                ) from direct_error
+            result.warnings.append(
+                "FastVideoSave was unavailable. Direct Instagram retrieval returned video "
+                "items only; any photos in the post or stories may be missing."
+            )
+            return result
     try:
         return download_with_ytdlp(target, job_dir, settings, cookie_source, cancel, on_progress)
     except ExtractError as exc:
@@ -456,32 +483,42 @@ def download(
         log.info("Instagram %s; trying the configured FastVideoSave fallback", exc.kind)
         if on_progress:
             on_progress(0.0, "Instagram direct fetch failed; contacting FastVideoSave")
-        try:
-            urls = fastvideosave.fetch_media_urls(target.url, settings, cancel)
-            paths = fastvideosave.download_media(urls, job_dir, settings, cancel, on_progress)
-        except fastvideosave.FastVideoSaveError as fallback:
-            raise ExtractError(
-                f"Instagram direct download failed. FastVideoSave fallback: {fallback}",
-                "fallback",
-            ) from fallback
-        code = target.url.rstrip("/").rsplit("/", 1)[-1]
-        return ExtractResult(
-            items=[
-                _to_item(
-                    {
-                        "id": f"{code}-{index + 1}" if len(paths) > 1 else code,
-                        "title": f"Instagram {code}",
-                        "webpage_url": target.url,
-                        "format_id": "fastvideosave",
-                    },
-                    path,
-                )
-                for index, path in enumerate(paths)
-            ],
-            title=f"Instagram {code}",
-            uploader=None,
-            provider="FastVideoSave",
-        )
+        return download_instagram_media(target, job_dir, settings, cancel, on_progress)
+
+
+def download_instagram_media(
+    target: MediaURL,
+    job_dir: Path,
+    settings: Settings,
+    cancel: CancelToken,
+    on_progress: ProgressHook | None = None,
+) -> ExtractResult:
+    cancel.check()
+    if on_progress:
+        on_progress(0.0, "Retrieving Instagram photos and videos through FastVideoSave")
+    try:
+        urls = fastvideosave.fetch_media_urls(target.url, settings, cancel)
+        paths = fastvideosave.download_media(urls, job_dir, settings, cancel, on_progress)
+    except fastvideosave.FastVideoSaveError as exc:
+        raise ExtractError(f"FastVideoSave fallback: {exc}", "fallback") from exc
+    code = target.url.rstrip("/").rsplit("/", 1)[-1]
+    return ExtractResult(
+        items=[
+            _to_item(
+                {
+                    "id": f"{code}-{index + 1}" if len(paths) > 1 else code,
+                    "title": f"Instagram {code}",
+                    "webpage_url": target.url,
+                    "format_id": "fastvideosave",
+                },
+                path,
+            )
+            for index, path in enumerate(paths)
+        ],
+        title=f"Instagram {code}",
+        uploader=None,
+        provider="FastVideoSave",
+    )
 
 
 def download_deviantart(

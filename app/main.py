@@ -139,6 +139,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         local = client_is_local(request, settings)
         return {
             "instagram_fallback": "fastvideosave" if settings.fastvideosave_enabled else None,
+            "instagram_public_media": {
+                "photos": settings.fastvideosave_enabled,
+                "stories": settings.fastvideosave_enabled,
+            },
+            "image_upscale": {
+                "enabled": settings.enhancement_enabled,
+                "resolutions": ["1440p", "2160p"],
+            },
             "browser_login": {
                 "mode": settings.auto_browser_cookies,
                 "active_for_you": settings.auto_browser_cookies == "always"
@@ -303,6 +311,27 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return {"status": "deleted"}
         manager.cancel(job_id)
         return {"status": "cancelling"}
+
+    @app.post("/api/jobs/{job_id}/files/{index}/upscale", status_code=202)
+    async def upscale_image_file(
+        job_id: str,
+        index: int,
+        request: Request,
+        resolution: Literal["1440p", "2160p"] = "2160p",
+    ) -> dict:
+        try:
+            job = manager.upscale_image_output(
+                job_id, index, resolution, client_ip(request, settings)
+            )
+        except (JobNotFound, IndexError) as exc:
+            raise HTTPException(status_code=404, detail="Original image not found.") from exc
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=410, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except TooManyJobs as exc:
+            raise HTTPException(status_code=429, detail=str(exc)) from exc
+        return job.to_dict()
 
     @app.get("/api/jobs/{job_id}/files/{index}")
     async def get_file(job_id: str, index: int, inline: bool = False) -> FileResponse:

@@ -29,6 +29,12 @@ UPLOAD_INPUT_ARGS = [
     "-format_whitelist",
     "mov,matroska,webm,avi,mpegts,mpeg,flv,ogg,asf",
 ]
+IMAGE_INPUT_ARGS = [
+    "-protocol_whitelist",
+    "file,pipe",
+    "-format_whitelist",
+    "image2,jpeg_pipe,png_pipe,webp_pipe",
+]
 
 
 class JobCancelled(Exception):
@@ -136,7 +142,12 @@ def fps_to_ffmpeg_rate(fps: float) -> str:
 
 
 async def ffprobe(
-    path: Path, settings: Settings, *, local_upload: bool = False, cancel: CancelToken | None = None
+    path: Path,
+    settings: Settings,
+    *,
+    local_upload: bool = False,
+    local_image: bool = False,
+    cancel: CancelToken | None = None,
 ) -> VideoInfo:
     cmd = [
         settings.ffprobe_bin,
@@ -149,6 +160,7 @@ async def ffprobe(
         "-of",
         "json",
         *(UPLOAD_INPUT_ARGS if local_upload else []),
+        *(IMAGE_INPUT_ARGS if local_image else []),
         str(path),
     ]
     proc = await asyncio.create_subprocess_exec(

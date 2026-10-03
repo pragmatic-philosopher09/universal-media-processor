@@ -159,6 +159,8 @@
       if (configured || pasted) {
         urlHint.textContent = "Story link — login is configured, you're good to go.";
         urlHint.classList.add("ok");
+      } else if (kind === "story" && capabilities?.instagram_public_media?.stories) {
+        urlHint.textContent = "Public stories are fetched through FastVideoSave. Use a story link or instagram.com/stories/username/. Expired or private stories may be unavailable.";
       } else if (browserLoginActive()) {
         urlHint.textContent = "Story link — your browser's Instagram login will be used automatically.";
         urlHint.classList.add("ok");
@@ -277,7 +279,9 @@
     let sub = "";
     if (job.status === "uploading") sub = `${pct}% uploaded`;
     else if (job.status === "downloading") sub = pct ? `${pct}%` : "Resolving the best rendition…";
-    else if (job.status === "enhancing") sub = `${pct}% · interpolating and upscaling frame by frame — this takes a while`;
+    else if (job.status === "enhancing") sub = job.image_resolution || job.sources?.[0]?.is_image
+      ? `${pct}% · upscaling image — no frame interpolation`
+      : `${pct}% · interpolating and upscaling frame by frame — this takes a while`;
     else if (job.status === "done") sub = "Done. Files are kept for a limited time.";
     else if (job.status === "cancelled") sub = "Cancelled.";
     substageEl.textContent = sub;
@@ -295,10 +299,11 @@
       chipsEl.appendChild(chip("source", `${src.width}×${src.height} @ ${fmtFps(src.fps)} fps`));
       chipsEl.appendChild(chip("length", fmtDuration(src.duration)));
       if (src.bit_rate) chipsEl.appendChild(chip("bitrate", `${(src.bit_rate / 1e6).toFixed(1)} Mbps`));
-      if (job.sources.length > 1) chipsEl.appendChild(chip("items", String(job.sources.length)));
     }
-    if (job.plan && job.options && ["enhance", "convert"].includes(job.options.mode)) {
-      chipsEl.appendChild(chip("target", `${job.plan.target_width}×${job.plan.target_height} @ ${fmtFps(job.plan.target_fps)} fps`));
+    if (job.sources && job.sources.length > 1) chipsEl.appendChild(chip("items", String(job.sources.length)));
+    if (job.plan && job.options && ["enhance", "convert", "upscale_image"].includes(job.options.mode)) {
+      chipsEl.appendChild(chip("target", `${job.plan.target_width}×${job.plan.target_height}` +
+        (src?.is_image ? " image" : ` @ ${fmtFps(job.plan.target_fps)} fps`)));
       if (job.engine) chipsEl.appendChild(chip("engine", job.engine));
     }
     if (job.auth) chipsEl.appendChild(chip("login", job.auth));
@@ -353,30 +358,39 @@
       node.querySelector(".result-meta").textContent = out.is_image
         ? `${out.width}×${out.height} · image · ${fmtBytes(out.size)}`
         : `${out.width}×${out.height} · ${fmtFps(out.fps)} fps · ${fmtDuration(out.duration)} · ${fmtBytes(out.size)}` +
-          (out.vcodec ? ` · ${out.vcodec}` : "");
+          (out.vcodec ? ` · ${out.vcodec}` : "") +
+          (out.has_audio === true ? " · audio included" : out.has_audio === false ? " · no audio in retrieved file" : "");
       const link = node.querySelector(".download");
       link.href = out.url;
       link.setAttribute("download", out.download_name);
       link.textContent = out.kind === "converted" ? (job.conversion_preset === "2160p60" ? "Download 4K 60 fps" : "Download MP4")
-        : out.kind === "enhanced" ? "Download enhanced" : "Download original";
+        : out.kind === "enhanced" ? (out.is_image ? "Download upscaled PNG" : "Download enhanced")
+        : out.is_image ? "Download photo" : "Download original";
       link.addEventListener("click", () => {
         // Embedded browsers save silently; confirm it and block accidental repeat clicks.
         const label = link.textContent;
         link.classList.add("busy");
         link.textContent = "Saving…";
-        toast(`<b>Download started:</b> ${out.download_name} — look in your browser's Downloads folder.`);
+        toast(`Download started — look in your browser's Downloads folder.`);
         setTimeout(() => { link.classList.remove("busy"); link.textContent = label; }, 4000);
       });
-      if (out.kind === "original" && !out.is_image) {
+      if (out.kind === "original") {
         node.querySelector(".result-conversion").classList.remove("hidden");
         const button = node.querySelector(".upscale");
+        if (out.is_image) {
+          button.textContent = "Upscale image to 4K";
+          node.querySelector(".result-conversion .hint").textContent =
+            "Upscale this downloaded photo to a 4K-size PNG without fetching it again. No frame-rate conversion applies to photos.";
+        }
         button.disabled = !(capabilities && capabilities.conversion && capabilities.conversion.enabled);
         if (capabilities && capabilities.conversion && !capabilities.conversion.enabled) {
           node.querySelector(".conversion-availability").textContent = "Conversion is disabled on this server.";
         }
         button.addEventListener("click", () => {
           if (submit.disabled || button.disabled) return;
-          startJob(null, `${out.url}/convert?preset=2160p60`, true);
+          startJob(null, out.is_image
+            ? `${out.url}/upscale?resolution=2160p`
+            : `${out.url}/convert?preset=2160p60`, true);
         });
       }
       if (appendResults) resultsEl.prepend(node);
