@@ -3,88 +3,170 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Media Downloader · Instagram, YouTube, TikTok, DeviantArt · best quality + 4K 60 fps enhancement</title>
-  <meta name="description" content="Download Instagram reels & stories, YouTube videos, TikToks and DeviantArt art in the best quality served, then optionally enhance them to 4K 60 fps." />
+  <title>MediaFlow · Media Downloader — links or files in, clean labelled media out</title>
+  <meta name="description" content="Bring media in from Instagram, YouTube, TikTok, DeviantArt or your own files, choose an outcome — keep the original, enhance to 4K 60 fps, or standardize for editing — review the plan and download clearly labelled results." />
   <link rel="stylesheet" href="/style.css" />
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%23141414'/%3E%3Cpath d='M20 32h24M32 20v24' stroke='%23fff' stroke-width='5' stroke-linecap='round'/%3E%3C/svg%3E" />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%23141414'/%3E%3Cpath d='M18 40c8 0 8-16 16-16s8 16 12 16' fill='none' stroke='%23fff' stroke-width='5' stroke-linecap='round'/%3E%3C/svg%3E" />
 </head>
 <body>
   <main class="shell">
     <header class="hero">
+      <p class="eyebrow">MediaFlow · formerly Media Downloader 4K60</p>
       <div class="brand">
-        <h1>Media Downloader</h1>
+        <h1>Media in. Ready media out.</h1>
       </div>
       <p class="tagline">
-        Save Instagram reels and stories, YouTube videos, TikToks and DeviantArt pieces in the
-        <strong>best quality the platform serves</strong> — and, where the server allows it, render a
-        <strong>4K 60 fps</strong> version.
+        Bring in links from Instagram, YouTube, TikTok and DeviantArt — or your own files — then
+        <strong>keep the original</strong>, <strong>enhance to 4K 60 fps</strong> or
+        <strong>standardize for editing</strong>. Every result says exactly what was done to it.
       </p>
     </header>
 
-    <form id="job-form" class="card" autocomplete="off">
-      <label class="field">
-        <span class="field-label">Link</span>
+    <form id="job-form" class="card workspace" autocomplete="off" novalidate>
+      <section class="step" aria-labelledby="step-add">
+        <h2 id="step-add" class="step-title"><span class="step-num">1</span> Add media</h2>
         <div class="url-row">
-          <input id="url" name="url" type="text" inputmode="url" autocapitalize="off" required
+          <input id="url" name="url" type="text" inputmode="url" autocapitalize="off"
+                 aria-label="Link"
                  placeholder="Paste an Instagram, YouTube, TikTok or DeviantArt link — it starts by itself" />
-          <button id="submit" type="submit" class="primary">Fetch</button>
+          <button id="add-link" type="button" class="ghost">Add to batch</button>
         </div>
         <span id="url-hint" class="hint">Tip: paste anywhere on this page (⌘V / Ctrl+V) and the download starts immediately.</span>
-      </label>
 
-      <fieldset class="field">
-        <legend class="field-label">Output</legend>
-        <div class="segmented" role="radiogroup" aria-label="Output mode">
-          <label><input type="radio" name="mode" value="enhance" checked /><span>Enhance to 4K 60 fps</span></label>
-          <label><input type="radio" name="mode" value="original" /><span>Original</span></label>
+        <label id="dropzone" class="dropzone" tabindex="0">
+          <input id="file-input" type="file" multiple
+                 accept="video/*,image/*,.mkv,.mov,.m4v,.webm,.avi" hidden />
+          <span class="dropzone-title">Drop video or image files here, or <u>browse</u></span>
+          <span id="dropzone-hint" class="hint">MP4, MOV, MKV, WebM, AVI, PNG, JPG, WebP.</span>
+        </label>
+
+        <div id="queue-wrap" class="queue-wrap hidden">
+          <div class="queue-head">
+            <span id="queue-count" class="field-label">Batch</span>
+            <button id="queue-clear" type="button" class="link-btn">Clear</button>
+          </div>
+          <ul id="queue" class="queue" aria-live="polite"></ul>
         </div>
-      </fieldset>
+      </section>
 
-      <div id="enhance-options" class="options-grid">
-        <label class="field compact">
-          <span class="field-label">Resolution</span>
-          <select name="resolution">
-            <option value="2160p" selected>4K (2160p)</option>
-            <option value="1440p">1440p</option>
-            <option value="original">Keep original</option>
-          </select>
-        </label>
-        <label class="field compact">
-          <span class="field-label">Frame rate</span>
-          <select name="fps">
-            <option value="60" selected>60 fps (interpolated)</option>
-            <option value="original">Keep original</option>
-          </select>
-        </label>
-        <label class="field compact">
-          <span class="field-label">Engine</span>
-          <select name="engine">
-            <option value="auto" selected>Automatic</option>
-            <option value="ffmpeg">ffmpeg (classical)</option>
-            <option value="ai" id="engine-ai">AI — RIFE + Real-ESRGAN (experimental)</option>
-          </select>
-          <span id="engine-hint" class="hint"></span>
-        </label>
-      </div>
-
-      <details class="advanced" id="advanced">
-        <summary id="advanced-summary">Advanced · Instagram login</summary>
-        <div class="advanced-body">
-          <p id="auth-status" class="hint"></p>
-          <label class="field">
-            <span class="field-label" id="cookies-label">Session cookie for the pasted link's site</span>
-            <textarea id="cookies" name="cookies" rows="3" spellcheck="false"
-              placeholder="Paste the login cookie value (Instagram/TikTok: sessionid, DeviantArt: auth, YouTube: full Cookie header), the full Cookie header, or a cookies.txt export"></textarea>
-            <span class="hint">
-              In your browser: DevTools → Application/Storage → Cookies → the site → copy the login cookie.
-              Sent only to this server, kept in memory for the job, never written to disk.
+      <section class="step" aria-labelledby="step-outcome">
+        <h2 id="step-outcome" class="step-title"><span class="step-num">2</span> Choose an outcome</h2>
+        <div class="outcomes" role="radiogroup" aria-label="Outcome">
+          <label class="outcome" data-mode="original">
+            <input type="radio" name="mode" value="original" />
+            <span class="outcome-body">
+              <span class="outcome-name">Keep original</span>
+              <span class="outcome-desc">Best quality the source offers, untouched.</span>
+              <span class="outcome-trade">Fastest · nothing invented</span>
             </span>
           </label>
-          <label class="check">
-            <input type="checkbox" id="remember-cookies" /> Remember on this device (stored in this browser only)
+          <label class="outcome" data-mode="enhance">
+            <input type="radio" name="mode" value="enhance" checked />
+            <span class="outcome-body">
+              <span class="outcome-name">Enhance</span>
+              <span class="outcome-desc">Upscale towards 4K and interpolate to 60 fps.</span>
+              <span class="outcome-trade">Slowest · generates new pixels and frames</span>
+            </span>
+          </label>
+          <label class="outcome" data-mode="standardize">
+            <input type="radio" name="mode" value="standardize" />
+            <span class="outcome-body">
+              <span class="outcome-name">Standardize for editing</span>
+              <span class="outcome-desc">One frame size, constant frame rate, H.264/AAC.</span>
+              <span class="outcome-trade">Fast · may letterbox, crop or repeat frames</span>
+            </span>
           </label>
         </div>
-      </details>
+        <span id="enhance-off-note" class="hint warn hidden"></span>
+
+        <div id="enhance-options" class="options-grid">
+          <label class="field compact">
+            <span class="field-label">Resolution</span>
+            <select name="resolution">
+              <option value="2160p" selected>4K (2160p)</option>
+              <option value="1440p">1440p</option>
+              <option value="original">Keep original</option>
+            </select>
+          </label>
+          <label class="field compact">
+            <span class="field-label">Frame rate</span>
+            <select name="fps">
+              <option value="60" selected>60 fps (interpolated)</option>
+              <option value="original">Keep original</option>
+            </select>
+          </label>
+          <label class="field compact">
+            <span class="field-label">Engine</span>
+            <select name="engine">
+              <option value="auto" selected>Automatic</option>
+              <option value="ffmpeg">ffmpeg (classical)</option>
+              <option value="ai" id="engine-ai">AI — RIFE + Real-ESRGAN (experimental)</option>
+            </select>
+            <span id="engine-hint" class="hint"></span>
+          </label>
+        </div>
+
+        <div id="standardize-options" class="options-grid hidden">
+          <label class="field compact">
+            <span class="field-label">Frame size</span>
+            <select name="std_canvas">
+              <option value="1920x1080" selected>1920×1080 · landscape HD</option>
+              <option value="1080x1920">1080×1920 · vertical HD</option>
+              <option value="1080x1080">1080×1080 · square</option>
+              <option value="1280x720">1280×720 · landscape 720p</option>
+              <option value="720x1280">720×1280 · vertical 720p</option>
+              <option value="3840x2160">3840×2160 · landscape 4K</option>
+              <option value="source">Keep each clip's size</option>
+            </select>
+          </label>
+          <label class="field compact">
+            <span class="field-label">Fit</span>
+            <select name="std_fit">
+              <option value="pad" selected>Fit inside (black bars)</option>
+              <option value="crop">Fill frame (crop edges)</option>
+            </select>
+          </label>
+          <label class="field compact">
+            <span class="field-label">Frame rate</span>
+            <select name="std_fps">
+              <option value="30" selected>30 fps constant</option>
+              <option value="25">25 fps constant</option>
+              <option value="24">24 fps constant</option>
+              <option value="60">60 fps constant</option>
+              <option value="source">Source rate, made constant</option>
+            </select>
+          </label>
+        </div>
+
+        <label class="check">
+          <input type="checkbox" id="review" checked />
+          Review the plan before processing
+        </label>
+
+        <details class="advanced" id="advanced">
+          <summary id="advanced-summary">Advanced · Instagram login</summary>
+          <div class="advanced-body">
+            <p id="auth-status" class="hint"></p>
+            <label class="field">
+              <span class="field-label" id="cookies-label">Session cookie for the pasted link's site</span>
+              <textarea id="cookies" name="cookies" rows="3" spellcheck="false"
+                placeholder="Paste the login cookie value (Instagram/TikTok: sessionid, DeviantArt: auth, YouTube: full Cookie header), the full Cookie header, or a cookies.txt export"></textarea>
+              <span class="hint">
+                In your browser: DevTools → Application/Storage → Cookies → the site → copy the login cookie.
+                Sent only to this server, kept in memory for the job, never written to disk.
+              </span>
+            </label>
+            <label class="check">
+              <input type="checkbox" id="remember-cookies" /> Remember on this device (stored in this browser only)
+            </label>
+          </div>
+        </details>
+      </section>
+
+      <div class="form-actions">
+        <button id="submit" type="submit" class="primary">Fetch</button>
+        <span id="submit-hint" class="hint"></span>
+      </div>
     </form>
 
     <section id="status" class="card status hidden" aria-live="polite">
@@ -100,11 +182,37 @@
       </div>
       <div class="bar"><div id="bar-fill" class="bar-fill" style="width:0%"></div></div>
       <div id="chips" class="chips"></div>
+      <ul id="items" class="items hidden"></ul>
       <p id="error" class="error hidden"></p>
       <ul id="warnings" class="warnings hidden"></ul>
     </section>
 
-    <section id="results" class="results hidden"></section>
+    <section id="review-card" class="card review hidden" aria-live="polite">
+      <div class="review-head">
+        <div>
+          <h2 class="section-title">Review the plan</h2>
+          <p class="hint">Nothing has been processed yet. Change the outcome above and the plan updates.</p>
+        </div>
+      </div>
+      <ol id="proposals" class="proposals"></ol>
+      <div class="review-actions">
+        <button id="approve" type="button" class="primary">Process</button>
+        <button id="review-cancel" type="button" class="ghost">Cancel</button>
+        <span id="review-summary" class="hint"></span>
+      </div>
+    </section>
+
+    <section id="results-wrap" class="results-wrap hidden">
+      <div class="results-head">
+        <h2 class="section-title">Results</h2>
+        <div class="bundle">
+          <a id="download-all" class="primary" href="#" download>Download all (.zip)</a>
+          <a id="manifest-json" class="ghost" href="#" download>Manifest JSON</a>
+          <a id="manifest-csv" class="ghost" href="#" download>CSV</a>
+        </div>
+      </div>
+      <section id="results" class="results"></section>
+    </section>
 
     <footer class="foot">
       <details class="reality">
@@ -118,6 +226,17 @@
           signal processing (ffmpeg motion-compensated interpolation, Lanczos scaling, contrast-adaptive
           sharpening) — smooth and natural, but it cannot invent detail. The optional AI engine (RIFE +
           Real-ESRGAN neural networks) can, but it needs extra binaries and is experimental and unverified.
+        </p>
+      </details>
+      <details class="reality">
+        <summary>What do the labels on results mean?</summary>
+        <p>
+          <strong>Native</strong> / <strong>Your file</strong>: exactly what the source delivered.
+          <strong>Upscaled</strong>, <strong>Interpolated</strong> and the <strong>AI</strong> labels mean
+          pixels or frames were generated. <strong>Letterboxed</strong>, <strong>Cropped</strong>,
+          <strong>Frame rate converted</strong> and <strong>Constant frame rate</strong> come from Standardize;
+          converted frame rates repeat or drop frames rather than inventing motion. The manifest lists all of
+          it per file, with checksums.
         </p>
       </details>
       <p id="caps" class="caps"></p>
@@ -135,6 +254,7 @@
         <p class="result-kind"></p>
         <h3 class="result-name"></h3>
         <p class="result-meta"></p>
+        <div class="badges"></div>
         <a class="primary download" download>Download</a>
       </div>
     </article>

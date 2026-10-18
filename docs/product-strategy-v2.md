@@ -1,8 +1,8 @@
 # Product Strategy — v2 ("MediaFlow" working name)
 
 > **Status:** **decided.** v2 = the Universal Media Workspace (MediaFlow). A consumer media
-> utility is a planned *future* horizon (§10.1), not part of v2. This document changes nothing
-> in the current app.
+> utility is a planned *future* horizon (§10.1), not part of v2. The Phase 2 product surface is
+> now **built (app v2.0.0)** — see §14 for what shipped and what is still open.
 > **Ground rule:** multi-platform downloading and enhancement are **kept as-is and treated as
 > core assets**. v2 builds *on top of* them; it does not replace, narrow or deprecate them.
 >
@@ -318,3 +318,27 @@ enhancement visible.** The test is about the headline promise, not about removin
 5. Is "MediaFlow" worth a rename later, or should the repo name stay and only the positioning change?
 6. When the consumer utility arrives (§10.1), should it be a separate brand or a "simple mode"
    of MediaFlow?
+
+---
+
+## 14. Implementation status (app v2.0.0)
+
+Everything below is **additive**: the four platform integrations, best-rendition selection,
+both enhancement engines, the v1 API body and the paste-one-link fast path behave exactly as
+before. 170 automated tests pass (142 pre-existing + 28 new).
+
+| §4 MVP item | Status | Where |
+|---|---|---|
+| 1. Outcome picker | **Shipped** — *Keep original / Enhance / Standardize for editing* as cards with trade-offs; Enhance is greyed out where `ENHANCEMENT_ENABLED=false` | `static/`, `OUTCOMES` in `app/main.py` |
+| 2. Local file upload | **Shipped** — drag-and-drop/browse/paste, ffprobe-validated, size-capped, owned per client, expires with `JOB_TTL_MINUTES` | `app/uploads.py`, `POST /api/uploads` |
+| 3. Multi-item jobs | **Shipped** — up to `MAX_ITEMS_PER_JOB` links and files per job; one failing input doesn't fail the batch; pasted cookies only go to the platform they belong to | `app/jobs.py` |
+| 4. Standardize for editing | **Shipped** — canvas presets, fit (pad) or fill (crop), constant fps, H.264/AAC 48 kHz, faststart; images to PNG | `app/standardize.py` |
+| 5. Review step | **Shipped** — job pauses in `review` with source → target per file, treatments and warnings; re-plan on option change; nothing is processed before approval. **Not yet:** estimated time and size (§9-C) | `/plan`, `/start` |
+| 6. Results + manifest | **Shipped** — treatment badges, ZIP of everything, `manifest.json`/`.csv` with SHA-256 | `app/manifest.py` |
+| 7. Instrumentation | **Shipped (in-memory)** — north star, time to first output, outcome mix, success rate, review approvals; no URLs/IPs/names; `METRICS_ENABLED=false` opts out. **Not yet:** persistence across restarts, retention metrics (§7 needs returning-user identity, deliberately not collected) | `app/metrics.py`, `/api/metrics` |
+
+**Phase 1 (Validate) is still open:** the build doesn't replace the interviews or the segment
+decision; it gives them something real to put in front of people. Answers so far to §13: Q2 —
+upload is in, but behind `UPLOADS_ENABLED` so it can be dropped; Q3 — both formats ship;
+Q5 — positioning changed in the UI ("MediaFlow · formerly Media Downloader 4K60"), the repo
+name did not.

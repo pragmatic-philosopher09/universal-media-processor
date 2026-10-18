@@ -131,6 +131,13 @@ class Settings:
     max_source_duration_seconds: int = 1800
     allowed_domains: tuple[str, ...] = DEFAULT_ALLOWED_DOMAINS
 
+    # MediaFlow workspace: local uploads, multi-item jobs and aggregate product metrics
+    uploads_enabled: bool = True
+    max_upload_mb: int = 500
+    max_uploads_per_ip: int = 20
+    max_items_per_job: int = 10
+    metrics_enabled: bool = True
+
     # Logins. Per-platform `Cookie:` header strings (INSTAGRAM_COOKIES, YOUTUBE_COOKIES, ...),
     # a shared Netscape cookies.txt, or a local browser to read cookies from.
     platform_cookies: dict[str, str] = field(default_factory=dict)
@@ -216,6 +223,11 @@ class Settings:
             max_duration_seconds=_int("MAX_DURATION_SECONDS", 600),
             max_source_duration_seconds=_int("MAX_SOURCE_DURATION_SECONDS", 1800),
             allowed_domains=domains,
+            uploads_enabled=_bool("UPLOADS_ENABLED", True),
+            max_upload_mb=max(1, _int("MAX_UPLOAD_MB", 500)),
+            max_uploads_per_ip=max(1, _int("MAX_UPLOADS_PER_IP", 20)),
+            max_items_per_job=max(1, _int("MAX_ITEMS_PER_JOB", 10)),
+            metrics_enabled=_bool("METRICS_ENABLED", True),
             platform_cookies=_platform_cookies_from_env(),
             cookies_file=_path("COOKIES_FILE") or _path("IG_COOKIES_FILE"),
             cookies_from_browser=_str("COOKIES_FROM_BROWSER") or _str("IG_COOKIES_FROM_BROWSER"),
@@ -256,6 +268,10 @@ class Settings:
     @property
     def jobs_dir(self) -> Path:
         return self.data_dir / "jobs"
+
+    @property
+    def uploads_dir(self) -> Path:
+        return self.data_dir / "uploads"
 
     def proxy_for(self, platform: str) -> str | None:
         return self.platform_proxies.get(platform) or self.proxy_url

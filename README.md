@@ -17,6 +17,13 @@ videos and Shorts, **TikTok** videos and **DeviantArt** art and films in the hig
 platform actually serves, and optionally **enhances them to 4K (2160p) at 60 fps** (videos) or
 upscales them to 4K (images). Paste a link anywhere on the page and it starts.
 
+**v2 — MediaFlow.** The same downloader, grown into a small media-preparation workspace (see
+[docs/product-strategy-v2.md](docs/product-strategy-v2.md)): bring in **several links and/or
+your own files** at once, pick an **outcome** — *Keep original*, *Enhance* or the new
+*Standardize for editing* — **review the plan** per file before anything is processed, and get
+results with **treatment labels**, a **ZIP of everything** and a **manifest** (JSON/CSV with
+SHA-256 checksums). The v1 flow — paste one link, it starts — is unchanged.
+
 The default enhancement engine is **classical signal processing in ffmpeg — not AI**. An
 optional, *experimental and unverified* AI engine (RIFE + Real-ESRGAN neural networks) is wired
 in for people who install those binaries; see [Is any of this AI?](#is-any-of-this-ai).
@@ -59,6 +66,29 @@ What this app does instead:
   users can still paste a cookie
 - Progress reporting, cancellation, per-IP limits, automatic file expiry
 - No database, no build step: FastAPI + vanilla JS
+
+### MediaFlow workspace (v2)
+
+- **Batches**: queue up to `MAX_ITEMS_PER_JOB` links and files and process them as one job. With
+  something already in the batch, pasted links join it instead of starting a job, and pasting
+  several links at once adds them all. One failing link doesn't sink the rest.
+- **Your own files**: drag and drop (or browse/paste) MP4, MOV, MKV, WebM, AVI, PNG, JPG, WebP
+  or GIF. Each file is checked with ffprobe on upload and capped at `MAX_UPLOAD_MB`.
+- **Standardize for editing**: one frame size (1080p/720p/4K landscape, vertical, square or the
+  clip's own), *fit* (black bars) or *fill* (crop), a constant 24/25/30/60 fps (or the
+  source rate made constant), H.264 + AAC 48 kHz, square pixels and fast-start. Images become a
+  PNG on the same canvas. Frame-rate changes repeat or drop frames; they never invent motion.
+- **Review before processing** (on by default for batches): the job fetches and probes
+  everything, then pauses and shows *source → target* for each file with treatment badges and
+  warnings (e.g. "upscaling makes the frame bigger, not sharper"). Change the outcome and the
+  plan updates; nothing is processed until you press **Process**.
+- **Honest labels**: every output carries treatments — *Native*, *Your file*, *Upscaled*,
+  *Interpolated*, *AI upscaled*, *Letterboxed*, *Cropped*, *Frame rate converted*,
+  *Constant frame rate*, … — in the UI, the manifest and the ZIP.
+- **Bundle**: *Download all (.zip)* plus `manifest.json` / `manifest.csv` with dimensions,
+  frame rate, duration, codec, engine, treatments and SHA-256 for each file.
+- **Product metrics** (`/api/metrics`): aggregate counts only — successful sessions (the north
+  star), time to first output, outcome mix, review approvals. No URLs, IPs or file names.
 
 ## Platform notes
 
@@ -242,16 +272,28 @@ commented list. The important ones:
 | `AI_ENGINE` | `auto` | `ncnn`, `video2x`, or `off` |
 | `AI_UPSCALE_MODEL` | `realesrgan-x4plus` | `realesr-animevideov3` is much faster |
 | `AI_CHUNK_FRAMES` | `32` | frames per AI batch (disk vs. model-reload trade-off) |
+| `MAX_ITEMS_PER_JOB` | `10` | links + files per batch |
+| `UPLOADS_ENABLED` | `true` | `false` hides the drop zone and rejects `POST /api/uploads` |
+| `MAX_UPLOAD_MB` | `500` | largest accepted upload |
+| `MAX_UPLOADS_PER_IP` | `20` | uploaded files waiting to be used per client (unused ones expire with `JOB_TTL_MINUTES`) |
+| `METRICS_ENABLED` | `true` | `false` turns off `/api/metrics` and in-memory counting |
 
 ## API
 
 | Method | Path | Notes |
 |---|---|---|
-| `GET` | `/api/capabilities` | encoder, AI availability, auth status (incl. whether browser login applies to you), limits |
-| `POST` | `/api/jobs` | `{"url", "mode": "enhance"\|"original", "resolution": "2160p"\|"1440p"\|"original", "fps": "60"\|"original", "engine": "auto"\|"ffmpeg"\|"ai", "cookies"?}` → `202` job |
-| `GET` | `/api/jobs/{id}` | status, stage, progress, sources, plan, outputs, warnings |
-| `DELETE` | `/api/jobs/{id}` | cancel a running job or delete a finished one |
+| `GET` | `/api/capabilities` | encoder, AI availability, auth status (incl. whether browser login applies to you), limits, outcomes, standardize presets, upload limits |
+| `POST` | `/api/uploads?filename=…` | raw file as the request body → `201 {"id", "filename", "size", "info"}` (`413` too large, `400` not media, `403` disabled) |
+| `DELETE` | `/api/uploads/{id}` | discard an upload that hasn't been used |
+| `POST` | `/api/jobs` | `{"url"?, "urls"?: [...], "uploads"?: [ids], "mode": "enhance"\|"original"\|"standardize", "resolution": "2160p"\|"1440p"\|"original", "fps": "60"\|"original", "engine": "auto"\|"ffmpeg"\|"ai", "standardize"?: {"canvas": "1920x1080"\|…\|"source", "fps": "30"\|…\|"source", "fit": "pad"\|"crop"}, "review"?: false, "cookies"?}` → `202` job. The v1 body (`{"url", …}`) still works unchanged |
+| `GET` | `/api/jobs/{id}` | status (`queued`, `downloading`, `review`, `enhancing`, `done`, `error`, `cancelled`), stage, progress, inputs, sources, proposals, plan, outputs (with `treatments`), warnings, failures |
+| `POST` | `/api/jobs/{id}/plan` | while in `review`: proposals for different options, without changing the job |
+| `POST` | `/api/jobs/{id}/start` | while in `review`: optionally new options, then process → `202` (`409` if not in review) |
+| `DELETE` | `/api/jobs/{id}` | cancel a running (or waiting) job or delete a finished one |
 | `GET` | `/api/jobs/{id}/files/{index}?inline=1` | download (or stream) an output |
+| `GET` | `/api/jobs/{id}/archive` | ZIP of all outputs + manifest (`409` until done) |
+| `GET` | `/api/jobs/{id}/manifest?format=json\|csv` | per-file dimensions, fps, codec, engine, treatments, SHA-256 |
+| `GET` | `/api/metrics` | aggregate, anonymous product metrics (`404` when `METRICS_ENABLED=false`) |
 
 Interactive docs at `/api/docs`.
 
