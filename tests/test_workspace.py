@@ -294,6 +294,18 @@ def test_review_then_change_outcome_and_process(client):
     assert client.post(f"/api/jobs/{job_id}/plan", json={}).status_code == 409
 
 
+def test_start_with_empty_body_keeps_reviewed_plan(client):
+    job_id = client.post(
+        "/api/jobs", json={"url": REEL, "mode": "original", "review": True}
+    ).json()["id"]
+    assert wait_for(client, job_id, ("review", "error"))["status"] == "review"
+    started = client.post(f"/api/jobs/{job_id}/start", json={})
+    assert started.status_code == 202, started.text
+    assert started.json()["options"]["mode"] == "original"
+    job = wait_for(client, job_id)
+    assert [o["kind"] for o in job["outputs"]] == ["original"]
+
+
 def test_review_can_be_cancelled(client):
     job_id = client.post(
         "/api/jobs", json={"url": REEL, "mode": "original", "review": True}

@@ -296,6 +296,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/api/jobs/{job_id}/start", status_code=202)
     async def start_job(job_id: str, payload: ProcessingRequest | None = None) -> dict:
         find_job(job_id)
+        if payload is not None and not payload.model_fields_set:
+            # An empty body ({}) means "approve the reviewed plan", not "switch to the defaults".
+            payload = None
         if payload is not None:
             check_enhancement(payload.mode)
         try:
