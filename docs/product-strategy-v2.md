@@ -1,6 +1,8 @@
 # Product Strategy — v2 ("MediaFlow" working name)
 
-> **Status:** draft strategy for the next version. Nothing here changes the current app.
+> **Status:** **decided.** v2 = the Universal Media Workspace (MediaFlow). A consumer media
+> utility is a planned *future* horizon (§10.1), not part of v2. This document changes nothing
+> in the current app.
 > **Ground rule:** multi-platform downloading and enhancement are **kept as-is and treated as
 > core assets**. v2 builds *on top of* them; it does not replace, narrow or deprecate them.
 >
@@ -51,8 +53,12 @@ Three directions were considered:
 | Business model | Freemium | Freemium / paid tiers | Paid dev tool / API |
 | Main risk | Crowded category | Feature sprawl | Niche too small |
 
-**[Decision] Pursue Direction B (Universal Media Workspace), borrowing one workflow from
-Direction C (structured metadata/manifest output).**
+**[Decision — locked] Pursue Direction B (Universal Media Workspace, "MediaFlow"), borrowing
+one workflow from Direction C (structured metadata/manifest output).**
+
+**[Decision] Direction A is deferred, not rejected.** We'll come back to it later as a
+consumer media utility built on the same pipeline (see §10.1). Direction C stays a source of
+individual workflows, not a separate product.
 
 Why B fits this repo in particular. Unlike most "workspace" tools, **we already have a
 dependable link-import layer across four platforms *and* a transparent enhancement engine.**
@@ -225,6 +231,50 @@ Before any pricing test, measure cost per enhanced minute on the reference hosts
 | **1. Validate** | Find a segment with a real prep problem | 3 segment hypotheses · 5–8 interviews · current-workflow map · positioning statement · prioritization matrix | One segment + one workflow chosen on evidence |
 | **2. Smallest useful product** | One end-to-end workflow | Focused landing copy · upload + link import · 1–2 outcome presets (incl. existing Enhance) · review step · results + manifest · instrumentation | Users complete it reliably and come back or ask for it again |
 | **3. Deepen** | Follow observed usage | Candidates (none committed): batch at scale · saved presets · failed-job recovery · history · frame extraction / audio extraction · developer API · better AI enhancement | Each item is backed by a validated need |
+| **4. Expand (future)** | Consumer media utility (§10.1) | Simplified consumer surface on the same pipeline | Entry criteria in §10.1 are met |
+
+### 10.1 Future horizon: consumer media utility
+
+**What it is [Hypothesis]:** a lightweight, consumer-facing view of MediaFlow for people who
+just want *one* clip saved or made to look better. You paste a link or drop a file and get three
+choices with a preview:
+
+| Choice | Maps to existing / planned capability | Trade-off shown to the user |
+|---|---|---|
+| **Preserve** | v1 *Original*: best source rendition | No visual improvement |
+| **Enhance** | v1 *Enhance → 4K* (ffmpeg or AI upscale + CAS) | Slower; can add artifacts; no new real detail |
+| **Smooth** | v1 *fps → 60* (minterpolate / RIFE) | Interpolation artifacts on fast motion |
+
+**Why later, not now [Decision]:**
+- Media enhancement for consumers is a crowded category. It's only worth entering once we can
+  point to evidence: better usability and honest before/after comparisons, measured in MediaFlow.
+- It needs a hosted product, and that brings compute costs (enhancement) and acquisition costs
+  that v2 shouldn't take on before the workflow is validated.
+- Building the workspace first gives the consumer utility a tested pipeline, treatment labels
+  and quality metrics to reuse.
+
+**How v2 keeps the door open [Decision]:**
+- One shared pipeline: Import → Prepare → Deliver. The consumer utility becomes *another
+  surface* over the same outcomes, not a fork.
+- Outcomes are named, reusable presets, so *Preserve / Enhance / Smooth* are just presets
+  shown in a simpler UI.
+- Treatment labels and side-by-side outputs (already in v1) become the consumer
+  before/after preview.
+- The API stays additive, so a future consumer front end (web, mobile, or share-sheet) can sit on
+  the existing endpoints.
+
+**Entry criteria (all must hold before Phase 4):**
+1. MediaFlow's north-star metric is growing and the job success rate per platform meets the §9-A
+   bar.
+2. Instrumentation shows a meaningful share of sessions are **single-item Enhance/Preserve**
+   jobs, i.e. consumer-style usage is already showing up.
+3. Cost per enhanced minute is known and a hosted freemium model (§8) looks viable.
+4. At least a few consumer users have been interviewed and confirm that enhancement on its own
+   is a recurring need, not a one-off curiosity.
+
+**New consumer-specific risks to address then:** abuse/rate-limiting at consumer scale,
+retention for an occasional-use tool, mobile/share-sheet entry points, and stricter
+copyright/terms messaging for a broad audience.
 
 ---
 
@@ -266,3 +316,5 @@ enhancement visible.** The test is about the headline promise, not about removin
 3. Should the manifest be JSON, CSV or both, and does the editor segment care at all?
 4. What reliability bar (e.g. ≥ X% success over 7 days) does a platform need before we add another?
 5. Is "MediaFlow" worth a rename later, or should the repo name stay and only the positioning change?
+6. When the consumer utility arrives (§10.1), should it be a separate brand or a "simple mode"
+   of MediaFlow?
