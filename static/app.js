@@ -434,7 +434,6 @@
 
   const applyCapabilities = (caps) => {
     capabilities = caps;
-    $("#fallback-notice").classList.toggle("hidden", caps.instagram_fallback !== "fastvideosave");
     (caps.outcomes || []).forEach((outcome) => {
       const card = form.querySelector(`.outcome[data-mode="${outcome.id}"]`);
       if (!card) return;
@@ -488,12 +487,12 @@
       const browsers = (caps.browser_login.browsers || []).slice(0, 3).map((b) => b[0].toUpperCase() + b.slice(1)).join(", ");
       authStatus.textContent = caps.browser_login.mode === "always"
         ? `Instagram downloads can use the server owner's browser login (${browsers}…) automatically. Everyone with access to this app shares that Instagram session. Keep the app password private.`
-        : `You're on the computer running this server, so when Instagram demands a login the app uses your browser session (${browsers}…) automatically. Only fill the box below if that fails.`;
-      summary.textContent = "Advanced · Instagram login (automatic)";
+        : `You're on the computer running this server, so whenever a site demands a login the app uses the session from your own browser (${browsers}…) automatically — nothing to paste. Only fill the box below if that fails (e.g. Safari needs Full Disk Access to be readable).`;
+      summary.textContent = "Advanced · logins (automatic from your browser)";
     } else {
       authStatus.className = "hint";
-      authStatus.textContent = "Public links are fetched without a site login. If a platform restricts a particular link, retry later or upload the video directly. You can optionally supply your own site cookie below for content you are permitted to access.";
-      summary.textContent = "Advanced · optional site credentials";
+      authStatus.textContent = "This server has no Instagram session configured. Paste a cookie below to download Instagram stories, private content, or anything a site hides from logged-out visitors. YouTube, TikTok and DeviantArt usually work without one.";
+      summary.textContent = "Advanced · logins (needed for Instagram stories & most reels)";
     }
     if (caps.allow_user_cookies === false) {
       cookiesInput.disabled = true;

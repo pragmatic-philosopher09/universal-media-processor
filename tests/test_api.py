@@ -122,8 +122,7 @@ def test_frontend_is_served(client):
     response = client.get("/")
     assert response.status_code == 200
     assert "Media Downloader" in response.text
-    assert 'name="mode" value="original" checked' in response.text
-    assert 'name="mode" value="enhance" checked' not in response.text
+    assert 'name="mode" value="enhance" checked' in response.text
     assert client.get("/app.js").status_code == 200
     assert client.get("/style.css").status_code == 200
 
