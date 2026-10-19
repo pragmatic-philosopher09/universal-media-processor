@@ -61,8 +61,12 @@ def discovery_request_allowed(url: str, resource_type: str) -> bool:
     return browser_request_allowed(url, resource_type, BASE_BROWSER_HOSTS)
 
 
-def discover_api_hosts(url: str, settings: Settings, timeout: float = 45) -> list[str]:
-    """Return hosts whose data responses carry Instagram media addresses for `url`."""
+def discover_api_hosts(
+    url: str, settings: Settings, timeout: float = 45, diagnostics: dict | None = None
+) -> list[str]:
+    """Return hosts whose data responses carry Instagram media addresses for `url`.
+
+    `diagnostics`, when given, is filled with what the provider page did (no media URLs)."""
     from playwright.sync_api import sync_playwright
 
     responses = []
@@ -86,10 +90,12 @@ def discover_api_hosts(url: str, settings: Settings, timeout: float = 45) -> lis
                     responses.append(r) if r.request.resource_type in {"fetch", "xhr"} else None
                 ),
             )
-            page.goto(provider_page_url(url), wait_until="domcontentloaded")
+            landing = page.goto(provider_page_url(url), wait_until="domcontentloaded")
             deadline = time.monotonic() + timeout
             while time.monotonic() < deadline and not page.locator(MEDIA_SELECTOR).count():
                 page.wait_for_timeout(250)
+            if diagnostics is not None:
+                diagnostics.update(page_diagnostics(page, landing, responses))
             hosts: list[str] = []
             for response in responses:
                 host = urlsplit(response.url).hostname or ""
@@ -105,6 +111,23 @@ def discover_api_hosts(url: str, settings: Settings, timeout: float = 45) -> lis
         finally:
             if browser.is_connected():
                 browser.close()
+
+
+def page_diagnostics(page, landing, responses) -> dict:
+    """Summarise the provider page without exposing media or API URLs' query strings."""
+    try:
+        title = page.title()[:120]
+    except Exception:
+        title = ""
+    challenged = "just a moment" in title.lower() or any(
+        (urlsplit(frame.url).hostname or "") == "challenges.cloudflare.com" for frame in page.frames
+    )
+    return {
+        "page_status": landing.status if landing else None,
+        "page_title": title,
+        "cloudflare_challenge": challenged,
+        "data_requests": [f"{urlsplit(r.url).hostname} {r.status}" for r in responses[:20]],
+    }
 
 
 def check(urls: Sequence[str], settings: Settings, hosts: Collection[str]) -> str | None:
@@ -130,9 +153,10 @@ def run(urls: Sequence[str], settings: Settings, hosts_file: Path) -> tuple[int,
         return EXIT_OK, {"status": "ok", "api_hosts": sorted(hosts)}
 
     discovered: list[str] = []
+    diagnostics: dict = {}
     for url in urls:
         try:
-            discovered = discover_api_hosts(url, settings)
+            discovered = discover_api_hosts(url, settings, diagnostics=diagnostics)
         except Exception as exc:
             log.warning("Discovery for %s failed: %s", url, type(exc).__name__)
         if discovered:
@@ -144,6 +168,7 @@ def run(urls: Sequence[str], settings: Settings, hosts_file: Path) -> tuple[int,
             "error": error,
             "observed_hosts": discovered,
             "hint": "No new API host found; FastVideoSave may be down or its page changed.",
+            "diagnostics": diagnostics,
         }
     retry_error = check(urls, settings, hosts | set(new))
     if retry_error is not None:
