@@ -165,10 +165,15 @@ move makes every request time out. `python -m app.fastvideosave_probe` checks th
 and, if it broke, finds the host now returning Instagram media, verifies it, and saves it
 to `DATA_DIR/fastvideosave-hosts.json`, which the app re-reads per request (no restart).
 Run it periodically: `deploy/macos/install-fastvideosave-probe.sh` installs an hourly
-launchd job; on Linux use cron or a systemd timer. The scheduled GitHub workflow
-`.github/workflows/fastvideosave-health.yml` runs the same probe every 6 hours, opens a PR
-updating the bundled `app/fastvideosave_hosts.json` when the host moves, and opens an issue
-when the provider is down. `FASTVIDEOSAVE_PROBE_URLS` (comma-separated) overrides the
+launchd job; on Linux use cron or a systemd timer. Its latest report is served at
+`GET /api/providers/fastvideosave`. The scheduled GitHub workflow
+`.github/workflows/fastvideosave-health.yml` runs every 6 hours, opens a PR updating the
+bundled `app/fastvideosave_hosts.json` when the host moves, and opens an issue when the
+provider is down. FastVideoSave's Cloudflare challenges GitHub's runners, so set the
+repository secret `MEDIAFLOW_URL` to your deployment's public URL (plus
+`MEDIAFLOW_USERNAME`/`MEDIAFLOW_PASSWORD` if sign-in is on); the workflow then uses that
+server's hourly probe report. Without it the runner probes itself, and a Cloudflare
+challenge is only a warning. `FASTVIDEOSAVE_PROBE_URLS` (comma-separated) overrides the
 public posts it tests with.
 
 Each photo has **Download photo** and **Upscale image to 4K** controls. Upscaling reuses

@@ -5,8 +5,16 @@ Run periodically on the server (see deploy/macos/install-fastvideosave-probe.sh)
     python -m app.fastvideosave_probe
 
 Learned hosts go to DATA_DIR/fastvideosave-hosts.json, which the app re-reads per request,
-so a running server adapts without a restart. Prints one JSON status line on stdout.
-Exit codes: 0 healthy, 10 healthy after learning a new API host, 1 broken.
+so a running server adapts without a restart. The last report is kept in
+DATA_DIR/fastvideosave-probe.json and served at /api/providers/fastvideosave.
+
+FastVideoSave's Cloudflare blocks datacenter IPs such as GitHub's runners, so the scheduled
+workflow first asks a deployed server what it saw (--from-server URL) and only probes from
+the runner when no recent server report is available.
+
+Prints one JSON status line on stdout. Exit codes: 0 healthy, 10 healthy after learning a
+new API host, 1 broken, 2 inconclusive (this network is challenged by Cloudflare),
+3 no recent server report (--from-server only).
 """
 
 from __future__ import annotations
@@ -17,14 +25,18 @@ import logging
 import os
 import sys
 import time
+import urllib.error
+import urllib.request
+from base64 import b64encode
 from collections.abc import Collection, Sequence
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from urllib.parse import urlsplit
 
 from .config import Settings
 from .fastvideosave import (
     BASE_BROWSER_HOSTS,
+    BUNDLED_HOSTS_FILE,
     HOSTNAME_RE,
     MEDIA_SELECTOR,
     FastVideoSaveError,
@@ -43,7 +55,9 @@ DEFAULT_PROBE_URLS = (
     "https://www.instagram.com/reel/Dd_rcmHoBqo/",
     "https://www.instagram.com/p/DHZuFemSDC7/",
 )
-EXIT_OK, EXIT_BROKEN, EXIT_ADAPTED = 0, 1, 10
+EXIT_OK, EXIT_BROKEN, EXIT_BLOCKED, EXIT_NO_REPORT, EXIT_ADAPTED = 0, 1, 2, 3, 10
+STATUS_FILE_NAME = "fastvideosave-probe.json"
+PUBLIC_REPORT_KEYS = ("status", "checked_at", "new_hosts", "error", "hint", "diagnostics")
 MEDIA_MARKERS = ("cdninstagram.com", "fbcdn.net")
 log = logging.getLogger("fastvideosave_probe")
 
@@ -162,6 +176,13 @@ def run(urls: Sequence[str], settings: Settings, hosts_file: Path) -> tuple[int,
         if discovered:
             break
     new = [host for host in discovered if host not in hosts]
+    if not new and diagnostics.get("cloudflare_challenge"):
+        return EXIT_BLOCKED, {
+            "status": "blocked",
+            "error": error,
+            "hint": "Cloudflare challenged this network, so the result is inconclusive.",
+            "diagnostics": diagnostics,
+        }
     if not new:
         return EXIT_BROKEN, {
             "status": "broken",
@@ -183,6 +204,83 @@ def run(urls: Sequence[str], settings: Settings, hosts_file: Path) -> tuple[int,
     }
 
 
+def status_file(settings: Settings) -> Path:
+    return settings.data_dir / STATUS_FILE_NAME
+
+
+def save_report(path: Path, report: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_name(path.name + ".tmp")
+    temp.write_text(json.dumps(report) + "\n", encoding="utf-8")
+    os.replace(temp, path)
+
+
+def public_status(settings: Settings) -> dict:
+    """What a deployed server reports at /api/providers/fastvideosave (no local paths)."""
+    try:
+        report = json.loads(status_file(settings).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        report = None
+    return {
+        "enabled": settings.fastvideosave_enabled,
+        "learned_hosts": read_api_hosts(learned_hosts_file(settings)),
+        "last_probe": (
+            {k: report[k] for k in PUBLIC_REPORT_KEYS if k in report}
+            if isinstance(report, dict)
+            else None
+        ),
+    }
+
+
+def fetch_server_status(base_url: str, timeout: float = 20) -> dict:
+    parsed = urlsplit(base_url)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise ValueError("server URL must be http(s)")
+    request = urllib.request.Request(
+        base_url.rstrip("/") + "/api/providers/fastvideosave",
+        headers={"Accept": "application/json", "User-Agent": "fastvideosave-probe"},
+    )
+    username = os.environ.get("MEDIAFLOW_USERNAME", "")
+    password = os.environ.get("MEDIAFLOW_PASSWORD", "")
+    if username or password:
+        token = b64encode(f"{username}:{password}".encode()).decode("ascii")
+        request.add_header("Authorization", f"Basic {token}")
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        data = json.loads(response.read(1_000_000))
+    if not isinstance(data, dict):
+        raise ValueError("unexpected server response")
+    return data
+
+
+def from_server(
+    base_url: str, hosts_file: Path, max_age: timedelta = timedelta(hours=3)
+) -> tuple[int, dict]:
+    """Adopt a deployed server's verdict; learned hosts are copied into `hosts_file`."""
+    try:
+        data = fetch_server_status(base_url)
+        probe = data.get("last_probe") or {}
+        checked = datetime.fromisoformat(probe["checked_at"])
+    except (OSError, ValueError, KeyError, TypeError, urllib.error.URLError) as exc:
+        return EXIT_NO_REPORT, {"status": "no_report", "error": type(exc).__name__}
+    if datetime.now(UTC) - checked > max_age:
+        return EXIT_NO_REPORT, {"status": "no_report", "error": "stale", "checked_at": str(checked)}
+    status = probe.get("status")
+    report = {"source": "server", **probe}
+    if status == "blocked":
+        return EXIT_BLOCKED, report
+    if status not in {"ok", "adapted"}:
+        return EXIT_BROKEN, report
+    current = read_api_hosts(hosts_file)
+    learned = data.get("learned_hosts")
+    learned = learned if isinstance(learned, list) else []
+    new = [h for h in learned if isinstance(h, str) and HOSTNAME_RE.fullmatch(h)]
+    new = [h for h in dict.fromkeys(new) if h not in current]
+    if not new:
+        return EXIT_OK, report
+    write_api_hosts(hosts_file, new + current)
+    return EXIT_ADAPTED, {**report, "status": "adapted", "new_hosts": new}
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--url", action="append", help="public Instagram URL to probe (repeatable)")
@@ -191,8 +289,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         type=Path,
         help="where learned hosts are stored (default: DATA_DIR/fastvideosave-hosts.json)",
     )
+    parser.add_argument(
+        "--from-server",
+        metavar="URL",
+        help="adopt the latest report of the server at URL instead of probing "
+        "(credentials: MEDIAFLOW_USERNAME/MEDIAFLOW_PASSWORD)",
+    )
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    if args.from_server:
+        code, report = from_server(args.from_server, args.hosts_file or BUNDLED_HOSTS_FILE)
+        print(json.dumps(report), flush=True)
+        return code
     settings = Settings.from_env()
     env_urls = os.environ.get("FASTVIDEOSAVE_PROBE_URLS", "")
     urls = args.url or [u.strip() for u in env_urls.split(",") if u.strip()]
@@ -200,6 +308,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         urls or DEFAULT_PROBE_URLS, settings, args.hosts_file or learned_hosts_file(settings)
     )
     report["checked_at"] = datetime.now(UTC).replace(microsecond=0).isoformat()
+    try:
+        save_report(status_file(settings), report)
+    except OSError as exc:
+        log.warning("Could not save probe report: %s", type(exc).__name__)
     print(json.dumps(report), flush=True)
     return code
 

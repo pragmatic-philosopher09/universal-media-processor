@@ -20,6 +20,7 @@ from fastapi.security import HTTPBasic
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from . import fastvideosave_probe
 from .config import Settings
 from .cookies import CookieError
 from .enhance_ai import ai_capabilities
@@ -214,6 +215,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             response.headers["Content-Security-Policy"] = "frame-ancestors 'none'"
             response.headers["Referrer-Policy"] = "no-referrer"
             return response
+
+    @app.get("/api/providers/fastvideosave")
+    async def fastvideosave_status() -> dict:
+        return fastvideosave_probe.public_status(settings)
 
     @app.get("/api/capabilities")
     async def capabilities(request: Request) -> dict:

@@ -1,8 +1,14 @@
 name: FastVideoSave health
 
-# Checks the Instagram fallback every 6 hours. If FastVideoSave moved its API, the probe
-# learns the new host and this workflow opens a PR updating app/fastvideosave_hosts.json.
-# If it is down with no new host to learn, an issue is opened (or commented on).
+# Checks the Instagram fallback every 6 hours. If FastVideoSave moved its API, this workflow
+# opens a PR updating app/fastvideosave_hosts.json; if it is down, an issue is opened.
+#
+# FastVideoSave's Cloudflare challenges GitHub's runner IPs, so the runner cannot judge the
+# provider itself. Set the MEDIAFLOW_URL secret (e.g. https://your-server) to a deployment
+# running the hourly probe (deploy/macos/install-fastvideosave-probe.sh); its latest report
+# is used. Add MEDIAFLOW_USERNAME/MEDIAFLOW_PASSWORD secrets if the app requires sign-in.
+# Without a recent server report the runner probes itself, and a Cloudflare challenge is
+# reported as inconclusive (a warning) rather than as an outage.
 on:
   schedule:
     - cron: "17 */6 * * *"
@@ -42,10 +48,21 @@ jobs:
         env:
           DATA_DIR: ${{ runner.temp }}/data
           DOTENV_PATH: /dev/null
+          MEDIAFLOW_URL: ${{ secrets.MEDIAFLOW_URL }}
+          MEDIAFLOW_USERNAME: ${{ secrets.MEDIAFLOW_USERNAME }}
+          MEDIAFLOW_PASSWORD: ${{ secrets.MEDIAFLOW_PASSWORD }}
         run: |
           set +e
-          python -m app.fastvideosave_probe --hosts-file app/fastvideosave_hosts.json > probe.json
-          code=$?
+          code=3
+          if [ -n "$MEDIAFLOW_URL" ]; then
+            python -m app.fastvideosave_probe --from-server "$MEDIAFLOW_URL" \
+              --hosts-file app/fastvideosave_hosts.json > probe.json
+            code=$?
+          fi
+          if [ "$code" = 3 ]; then
+            python -m app.fastvideosave_probe --hosts-file app/fastvideosave_hosts.json > probe.json
+            code=$?
+          fi
           set -e
           cat probe.json
           echo "code=$code" >> "$GITHUB_OUTPUT"
@@ -55,7 +72,10 @@ jobs:
             cat probe.json
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
-          [ "$code" = 0 ] || [ "$code" = 10 ]
+          if [ "$code" = 2 ]; then
+            echo "::warning::Inconclusive: Cloudflare challenged this runner. Set the MEDIAFLOW_URL secret to use a deployed server's probe report."
+          fi
+          [ "$code" = 0 ] || [ "$code" = 2 ] || [ "$code" = 10 ]
 
       - name: Open PR with the learned host
         if: steps.probe.outputs.code == '10'

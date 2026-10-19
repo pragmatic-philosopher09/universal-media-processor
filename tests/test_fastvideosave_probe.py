@@ -2,6 +2,7 @@
 
 import json
 from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock
 
 import pytest
@@ -94,3 +95,66 @@ def test_main_prints_json_status(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(fastvideosave_probe, "fetch_media_urls", fake_fetch("api.getrequest.dev"))
     assert fastvideosave_probe.main(["--url", URLS[0]]) == 0
     assert json.loads(capsys.readouterr().out)["status"] == "ok"
+
+
+def test_cloudflare_challenge_is_inconclusive_not_broken(monkeypatch, settings, hosts_file):
+    monkeypatch.setattr(fastvideosave_probe, "fetch_media_urls", fake_fetch("never.example"))
+
+    def discover(url, settings, diagnostics):
+        diagnostics.update(cloudflare_challenge=True, page_status=403)
+        return []
+
+    monkeypatch.setattr(fastvideosave_probe, "discover_api_hosts", discover)
+    code, report = fastvideosave_probe.run(URLS, settings, hosts_file)
+    assert (code, report["status"]) == (fastvideosave_probe.EXIT_BLOCKED, "blocked")
+
+
+def test_main_saves_report_for_status_endpoint(monkeypatch, tmp_path, capsys):
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(fastvideosave_probe, "fetch_media_urls", fake_fetch("api.getrequest.dev"))
+    fastvideosave_probe.main(["--url", URLS[0]])
+    status = fastvideosave_probe.public_status(replace(Settings(), data_dir=tmp_path))
+    assert status["last_probe"]["status"] == "ok"
+    assert "api_hosts" not in status["last_probe"]
+
+
+def server_reply(status="ok", learned=(), age=timedelta(minutes=5)):
+    checked = (datetime.now(UTC) - age).isoformat()
+    return {"learned_hosts": list(learned), "last_probe": {"status": status, "checked_at": checked}}
+
+
+def test_from_server_copies_learned_hosts(monkeypatch, tmp_path):
+    bundled = tmp_path / "bundled.json"
+    fastvideosave.write_api_hosts(bundled, ["api.getrequest.dev"])
+    monkeypatch.setattr(
+        fastvideosave_probe,
+        "fetch_server_status",
+        lambda url: server_reply("adapted", ["api.moved.example", "api.getrequest.dev"]),
+    )
+    code, report = fastvideosave_probe.from_server("https://srv.example", bundled)
+    assert code == fastvideosave_probe.EXIT_ADAPTED
+    assert report["new_hosts"] == ["api.moved.example"]
+    assert fastvideosave.read_api_hosts(bundled) == ["api.moved.example", "api.getrequest.dev"]
+    code, _ = fastvideosave_probe.from_server("https://srv.example", bundled)
+    assert code == fastvideosave_probe.EXIT_OK
+
+
+@pytest.mark.parametrize(
+    ("reply", "expected"),
+    [
+        (server_reply("broken"), fastvideosave_probe.EXIT_BROKEN),
+        (server_reply("blocked"), fastvideosave_probe.EXIT_BLOCKED),
+        (server_reply("ok", age=timedelta(hours=5)), fastvideosave_probe.EXIT_NO_REPORT),
+        ({"last_probe": None}, fastvideosave_probe.EXIT_NO_REPORT),
+    ],
+)
+def test_from_server_verdicts(monkeypatch, tmp_path, reply, expected):
+    monkeypatch.setattr(fastvideosave_probe, "fetch_server_status", lambda url: reply)
+    code, _ = fastvideosave_probe.from_server("https://srv.example", tmp_path / "h.json")
+    assert code == expected
+    assert not (tmp_path / "h.json").exists()
+
+
+def test_unreachable_server_has_no_report(tmp_path):
+    code, _ = fastvideosave_probe.from_server("http://127.0.0.1:9", tmp_path / "h.json")
+    assert code == fastvideosave_probe.EXIT_NO_REPORT

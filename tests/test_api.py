@@ -68,6 +68,11 @@ def wait_for(client: TestClient, job_id: str, timeout: float = 90) -> dict:
     raise AssertionError("job did not finish in time")
 
 
+def test_fastvideosave_status_endpoint(client):
+    status = client.get("/api/providers/fastvideosave").json()
+    assert status == {"enabled": False, "learned_hosts": [], "last_probe": None}
+
+
 def test_capabilities(client):
     caps = client.get("/api/capabilities").json()
     assert caps["instagram_fallback"] is None
