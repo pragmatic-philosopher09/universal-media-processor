@@ -14,7 +14,14 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 from .config import Settings
 from .media import CancelToken, JobCancelled
 
-BROWSER_HOSTS = {"fastvideosave.net", "api.videodropper.app", "challenges.cloudflare.com"}
+# FastVideoSave moves its backend between hosts; keep the previous ones in case it moves back.
+BROWSER_HOSTS = {
+    "fastvideosave.net",
+    "api.getrequest.dev",
+    "api.videodropper.app",
+    "challenges.cloudflare.com",
+}
+PROXY_HOSTS = {"cdn.turbosave.app", "dl.videodropper.app"}
 log = logging.getLogger(__name__)
 
 
@@ -45,7 +52,7 @@ def validate_cdn_url(url: str) -> str:
 
 
 def media_url(url: str) -> str:
-    if _https_host(url) == "dl.videodropper.app":
+    if _https_host(url) in PROXY_HOSTS:
         values = parse_qs(urlsplit(url).query).get("url", [])
         if len(values) != 1:
             raise FastVideoSaveError("FastVideoSave returned an invalid download link.")

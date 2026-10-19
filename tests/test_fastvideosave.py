@@ -22,6 +22,7 @@ MP4 = b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 100
 def test_unwrap_and_validate_provider_media():
     assert fastvideosave.media_url(CDN) == CDN
     assert fastvideosave.media_url("https://dl.videodropper.app/?" + urlencode({"url": CDN})) == CDN
+    assert fastvideosave.media_url("https://cdn.turbosave.app/?" + urlencode({"url": CDN})) == CDN
     assert fastvideosave.media_url("https://video.xx.fbcdn.net/video.mp4")
 
 
@@ -39,6 +40,7 @@ def test_unwrap_and_validate_provider_media():
         "https://dl.videodropper.app/",
         "https://dl.videodropper.app/?url=https://localhost/video.mp4",
         "https://dl.videodropper.app/?url=x&url=y",
+        "https://cdn.turbosave.app/?url=https://localhost/video.mp4",
     ],
 )
 def test_unsafe_media_urls_are_rejected(url):
@@ -49,6 +51,7 @@ def test_unsafe_media_urls_are_rejected(url):
 def test_browser_request_allowlist_blocks_ads_media_and_local_network():
     assert fastvideosave.browser_request_allowed("https://fastvideosave.net/", "document")
     assert fastvideosave.browser_request_allowed("https://api.videodropper.app/allinone", "fetch")
+    assert fastvideosave.browser_request_allowed("https://api.getrequest.dev/allinone", "fetch")
     assert not fastvideosave.browser_request_allowed(CDN, "media")
     assert not fastvideosave.browser_request_allowed("https://ads.example/", "script")
     assert not fastvideosave.browser_request_allowed("http://localhost/", "fetch")
