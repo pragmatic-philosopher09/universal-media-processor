@@ -162,6 +162,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if job.status == JobStatus.DONE:
             manager.metrics.output_retrieved(job.id, job.created_at)
 
+    @app.middleware("http")
+    async def revalidate_frontend(request: Request, call_next):
+        response = await call_next(request)
+        # Without this, browsers heuristically cache the UI and pair new HTML with stale JS/CSS.
+        if not request.url.path.startswith("/api/"):
+            response.headers.setdefault("Cache-Control", "no-cache")
+        return response
+
     if settings.app_username and settings.app_password:
         basic_auth = HTTPBasic(auto_error=False)
         expected_user = settings.app_username.encode("utf-8")

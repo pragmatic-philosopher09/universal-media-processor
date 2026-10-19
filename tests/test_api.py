@@ -124,6 +124,9 @@ def test_frontend_is_served(client):
     assert "Media Downloader" in response.text
     assert 'name="mode" value="enhance" checked' in response.text
     assert client.get("/app.js").status_code == 200
+    for path in ("/", "/app.js", "/style.css"):
+        assert client.get(path).headers["cache-control"] == "no-cache"
+    assert "/app.js?v=" in response.text and "/style.css?v=" in response.text
     assert client.get("/style.css").status_code == 200
 
 
