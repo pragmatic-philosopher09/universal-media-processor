@@ -11,7 +11,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from .config import Settings
-from .media import CancelToken, ProgressCallback, fps_to_ffmpeg_rate, run_ffmpeg
+from .media import UPLOAD_INPUT_ARGS, CancelToken, ProgressCallback, fps_to_ffmpeg_rate, run_ffmpeg
 from .plan import EnhancePlan
 
 INTERPOLATION_PRESETS = {
@@ -59,15 +59,19 @@ def sharpen_filter(strength: float) -> str | None:
     return f"cas=strength={strength:.2f}"
 
 
-def build_video_filter(plan: EnhancePlan, settings: Settings) -> str:
+def build_video_filter(plan: EnhancePlan, settings: Settings, *, conversion: bool = False) -> str:
     filters: list[str] = []
-    if plan.interpolate:
+    if plan.interpolate and (not conversion or plan.fps_ratio > 1):
         filters.extend(interpolation_chain(plan, settings))
-    if plan.upscale:
+    if conversion:
+        filters.append(f"fps={fps_to_ffmpeg_rate(plan.target_fps)}")
+    if plan.upscale or conversion:
         filters.append(scale_filter(plan.target_width, plan.target_height))
         sharpen = sharpen_filter(settings.sharpen)
-        if sharpen:
+        if sharpen and plan.target_width > plan.source.width:
             filters.append(sharpen)
+    if conversion:
+        filters.append("setsar=1")
     filters.append("format=yuv420p")
     return ",".join(filters)
 
@@ -129,7 +133,13 @@ def audio_args(acodec: str | None, has_audio: bool) -> list[str]:
 
 
 def build_ffmpeg_command(
-    plan: EnhancePlan, src: Path, dst: Path, encoder: str, settings: Settings
+    plan: EnhancePlan,
+    src: Path,
+    dst: Path,
+    encoder: str,
+    settings: Settings,
+    *,
+    local_upload: bool = False,
 ) -> list[str]:
     cmd = [
         settings.ffmpeg_bin,
@@ -141,6 +151,7 @@ def build_ffmpeg_command(
         "-progress",
         "pipe:1",
         "-nostats",
+        *(UPLOAD_INPUT_ARGS if local_upload else []),
         "-i",
         str(src),
         "-map",
@@ -148,7 +159,7 @@ def build_ffmpeg_command(
         "-map",
         "0:a:0?",
         "-filter:v",
-        build_video_filter(plan, settings),
+        build_video_filter(plan, settings, conversion=local_upload),
     ]
     cmd += encoder_args(encoder, plan.target_width, plan.target_height, plan.target_fps, settings)
     cmd += audio_args(plan.source.acodec, plan.source.has_audio)
@@ -165,8 +176,9 @@ async def enhance_with_ffmpeg(
     settings: Settings,
     cancel: CancelToken,
     on_progress: ProgressCallback | None = None,
+    local_upload: bool = False,
 ) -> None:
-    cmd = build_ffmpeg_command(plan, src, dst, encoder, settings)
+    cmd = build_ffmpeg_command(plan, src, dst, encoder, settings, local_upload=local_upload)
     await run_ffmpeg(
         cmd,
         cancel=cancel,

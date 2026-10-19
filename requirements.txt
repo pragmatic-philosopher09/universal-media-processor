@@ -1,4 +1,6 @@
 fastapi>=0.115
+anyio>=4.0
 uvicorn[standard]>=0.30
 pydantic>=2.7
 yt-dlp[default,curl-cffi]>=2025.1.1
+playwright>=1.50

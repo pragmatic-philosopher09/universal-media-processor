@@ -247,6 +247,8 @@
       if (configured || pasted) {
         urlHint.textContent = "Story link — login is configured, you're good to go.";
         urlHint.classList.add("ok");
+      } else if (kind === "story" && capabilities?.instagram_public_media?.stories) {
+        urlHint.textContent = "Public stories are fetched through FastVideoSave. Use a story link or instagram.com/stories/username/. Expired or private stories may be unavailable.";
       } else if (browserLoginActive()) {
         urlHint.textContent = "Story link — your browser's Instagram login will be used automatically.";
         urlHint.classList.add("ok");
@@ -432,6 +434,7 @@
 
   const applyCapabilities = (caps) => {
     capabilities = caps;
+    $("#fallback-notice").classList.toggle("hidden", caps.instagram_fallback !== "fastvideosave");
     (caps.outcomes || []).forEach((outcome) => {
       const card = form.querySelector(`.outcome[data-mode="${outcome.id}"]`);
       if (!card) return;
@@ -483,12 +486,14 @@
     } else if (browserLoginActive()) {
       authStatus.className = "hint ok";
       const browsers = (caps.browser_login.browsers || []).slice(0, 3).map((b) => b[0].toUpperCase() + b.slice(1)).join(", ");
-      authStatus.textContent = `You're on the computer running this server, so whenever a site demands a login the app uses the session from your own browser (${browsers}…) automatically — nothing to paste. Only fill the box below if that fails (e.g. Safari needs Full Disk Access to be readable).`;
-      summary.textContent = "Advanced · logins (automatic from your browser)";
+      authStatus.textContent = caps.browser_login.mode === "always"
+        ? `Instagram downloads can use the server owner's browser login (${browsers}…) automatically. Everyone with access to this app shares that Instagram session. Keep the app password private.`
+        : `You're on the computer running this server, so when Instagram demands a login the app uses your browser session (${browsers}…) automatically. Only fill the box below if that fails.`;
+      summary.textContent = "Advanced · Instagram login (automatic)";
     } else {
       authStatus.className = "hint";
-      authStatus.textContent = "This server has no Instagram session configured. Paste a cookie below to download Instagram stories, private content, or anything a site hides from logged-out visitors. YouTube, TikTok and DeviantArt usually work without one.";
-      summary.textContent = "Advanced · logins (needed for Instagram stories & most reels)";
+      authStatus.textContent = "Public links are fetched without a site login. If a platform restricts a particular link, retry later or upload the video directly. You can optionally supply your own site cookie below for content you are permitted to access.";
+      summary.textContent = "Advanced · optional site credentials";
     }
     if (caps.allow_user_cookies === false) {
       cookiesInput.disabled = true;
@@ -724,11 +729,13 @@
   // ------------------------------------------------------------------ results
 
   const kindLabel = (out, job) => {
-    if (out.kind === "enhanced") return `Enhanced · ${out.engine || ""}`;
+    if (out.kind === "converted") return `Converted MP4 · ${out.engine || "ffmpeg"}`;
+    if (out.kind === "enhanced") return `${out.is_image ? "Upscaled" : "Enhanced"} · ${out.engine || ""}`;
     if (out.kind === "standardized") return "Standardized for editing";
     if ((out.treatments || []).includes("uploaded")) return "Your file · untouched";
     const input = (job.inputs || [])[out.input_index];
     const platformName = (input && input.platform_name) || job.platform_name || "the platform";
+    if (job.source_provider) return `Original · supplied by ${job.source_provider}`;
     return `Original · best rendition ${platformName} serves`;
   };
 
@@ -747,46 +754,97 @@
     manifestJson.classList.toggle("hidden", !done);
     manifestCsv.classList.toggle("hidden", !done);
 
-    const multiInput = (job.inputs || []).length > 1;
-    outputs.forEach((out) => {
-      const node = template.content.firstElementChild.cloneNode(true);
-      node.classList.add(out.kind);
-      const video = node.querySelector("video");
-      const img = node.querySelector("img");
-      if (out.is_image) {
-        video.hidden = true;
-        video.removeAttribute("src");
-        img.hidden = false;
-        img.src = `${out.url}?inline=1`;
-        img.alt = out.download_name;
-      } else {
-        img.hidden = true;
-        video.hidden = false;
-        video.src = `${out.url}?inline=1`;
+    outputs.forEach((out) => resultsEl.appendChild(renderOutput(out, job)));
+  };
+
+  /** Poll a single-file follow-up job (convert / upscale) and show its file under the original. */
+  const runFollowUp = async (button, note, url, node) => {
+    const label = button.textContent;
+    button.disabled = true;
+    button.textContent = "Starting…";
+    note.textContent = "";
+    try {
+      const res = await fetch(url, { method: "POST" });
+      if (!res.ok) throw new Error(await apiError(res));
+      let job = await res.json();
+      while (!["done", "error", "cancelled"].includes(job.status)) {
+        const pct = Math.round((job.progress || 0) * 100);
+        button.textContent = job.status === "queued" ? "Queued…" : `Working · ${pct}%`;
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+        const poll = await fetch(`/api/jobs/${job.id}`);
+        if (!poll.ok) throw new Error("The conversion job expired. Try again.");
+        job = await poll.json();
       }
-      node.querySelector(".result-kind").textContent = kindLabel(out, job);
-      node.querySelector(".result-name").textContent = out.download_name;
-      const input = (job.inputs || [])[out.input_index];
-      node.querySelector(".result-meta").textContent = (out.is_image
-        ? `${out.width}×${out.height} · image · ${fmtBytes(out.size)}`
-        : `${out.width}×${out.height} · ${fmtFps(out.fps)} fps · ${fmtDuration(out.duration)} · ${fmtBytes(out.size)}` +
-          (out.vcodec ? ` · ${out.vcodec}` : "")) +
-        (multiInput && input ? ` · from ${input.platform_name}` : "");
-      node.querySelector(".badges").replaceWith(badges(out.treatments));
-      const link = node.querySelector(".download");
-      link.href = out.url;
-      link.setAttribute("download", out.download_name);
-      link.textContent = { enhanced: "Download enhanced", standardized: "Download standardized" }[out.kind] || "Download original";
-      link.addEventListener("click", () => {
-        // Embedded browsers save silently; confirm it and block accidental repeat clicks.
-        const label = link.textContent;
-        link.classList.add("busy");
-        link.textContent = "Saving…";
-        toast(`<b>Download started:</b> ${escapeHtml(out.download_name)} — look in your browser's Downloads folder.`);
-        setTimeout(() => { link.classList.remove("busy"); link.textContent = label; }, 4000);
-      });
-      resultsEl.appendChild(node);
+      if (job.status !== "done") throw new Error(job.error || "Cancelled.");
+      [...job.outputs].reverse().forEach((out) => node.after(renderOutput(out, job)));
+      button.textContent = "Done — see below";
+    } catch (err) {
+      button.disabled = false;
+      button.textContent = label;
+      note.textContent = err.message || String(err);
+    }
+  };
+
+  const renderOutput = (out, job) => {
+    const multiInput = (job.inputs || []).length > 1;
+    const node = template.content.firstElementChild.cloneNode(true);
+    node.classList.add(out.kind);
+    const video = node.querySelector("video");
+    const img = node.querySelector("img");
+    if (out.is_image) {
+      video.hidden = true;
+      video.removeAttribute("src");
+      img.hidden = false;
+      img.src = `${out.url}?inline=1`;
+      img.alt = out.download_name;
+    } else {
+      img.hidden = true;
+      video.hidden = false;
+      video.src = `${out.url}?inline=1`;
+    }
+    node.querySelector(".result-kind").textContent = kindLabel(out, job);
+    node.querySelector(".result-name").textContent = out.download_name;
+    const input = (job.inputs || [])[out.input_index];
+    node.querySelector(".result-meta").textContent = (out.is_image
+      ? `${out.width}×${out.height} · image · ${fmtBytes(out.size)}`
+      : `${out.width}×${out.height} · ${fmtFps(out.fps)} fps · ${fmtDuration(out.duration)} · ${fmtBytes(out.size)}` +
+        (out.vcodec ? ` · ${out.vcodec}` : "") +
+        (out.has_audio === true ? " · audio" : out.has_audio === false ? " · no audio" : "")) +
+      (multiInput && input ? ` · from ${input.platform_name}` : "");
+    node.querySelector(".badges").replaceWith(badges(out.treatments));
+    const link = node.querySelector(".download");
+    link.href = out.url;
+    link.setAttribute("download", out.download_name);
+    link.textContent = out.kind === "converted" ? (job.conversion_preset === "2160p60" ? "Download 4K 60 fps" : "Download MP4")
+      : out.kind === "enhanced" ? (out.is_image ? "Download upscaled PNG" : "Download enhanced")
+      : out.kind === "standardized" ? "Download standardized"
+      : out.is_image ? "Download photo" : "Download original";
+    link.addEventListener("click", () => {
+      // Embedded browsers save silently; confirm it and block accidental repeat clicks.
+      const label = link.textContent;
+      link.classList.add("busy");
+      link.textContent = "Saving…";
+      toast(`<b>Download started:</b> ${escapeHtml(out.download_name)} — look in your browser's Downloads folder.`);
+      setTimeout(() => { link.classList.remove("busy"); link.textContent = label; }, 4000);
     });
+    const conversionEnabled = !!(capabilities && capabilities.conversion && capabilities.conversion.enabled);
+    if (out.kind === "original" && job.status === "done" && conversionEnabled) {
+      const box = node.querySelector(".result-conversion");
+      const button = box.querySelector(".upscale");
+      const note = box.querySelector(".conversion-availability");
+      box.classList.remove("hidden");
+      if (out.is_image) {
+        button.textContent = "Upscale image to 4K";
+        box.querySelector(".hint").textContent = "Upscale this photo to a 4K-size PNG without fetching it again.";
+      }
+      button.addEventListener("click", () => {
+        if (button.disabled) return;
+        runFollowUp(button, note, out.is_image
+          ? `${out.url}/upscale?resolution=2160p`
+          : `${out.url}/convert?preset=2160p60`, node);
+      });
+    }
+    return node;
   };
 
   [downloadAll, manifestJson, manifestCsv].forEach((link) => link.addEventListener("click", () => {
@@ -820,6 +878,7 @@
         finish(currentJob);
         return;
       }
+      if (!res.ok) throw new Error(`Status request failed (${res.status})`);
       const job = await res.json();
       pollFailures = 0;
       currentJob = job;

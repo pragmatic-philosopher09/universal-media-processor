@@ -32,6 +32,7 @@
           <button id="add-link" type="button" class="ghost">Add to batch</button>
         </div>
         <span id="url-hint" class="hint">Tip: paste anywhere on this page (⌘V / Ctrl+V) and the download starts immediately.</span>
+        <span id="fallback-notice" class="hint hidden">Public Instagram posts and stories are retrieved through FastVideoSave, a third-party service; reels use it only if direct retrieval fails. Your cookies and API keys are never sent to it.</span>
 
         <label id="dropzone" class="dropzone" tabindex="0">
           <input id="file-input" type="file" multiple
@@ -53,7 +54,7 @@
         <h2 id="step-outcome" class="step-title"><span class="step-num">2</span> Choose an outcome</h2>
         <div class="outcomes" role="radiogroup" aria-label="Outcome">
           <label class="outcome" data-mode="original">
-            <input type="radio" name="mode" value="original" />
+            <input type="radio" name="mode" value="original" checked />
             <span class="outcome-body">
               <span class="outcome-name">Keep original</span>
               <span class="outcome-desc">Best quality the source offers, untouched.</span>
@@ -61,7 +62,7 @@
             </span>
           </label>
           <label class="outcome" data-mode="enhance">
-            <input type="radio" name="mode" value="enhance" checked />
+            <input type="radio" name="mode" value="enhance" />
             <span class="outcome-body">
               <span class="outcome-name">Enhance</span>
               <span class="outcome-desc">Upscale towards 4K and interpolate to 60 fps.</span>
@@ -256,6 +257,11 @@
         <p class="result-meta"></p>
         <div class="badges"></div>
         <a class="primary download" download>Download</a>
+        <div class="result-conversion hidden">
+          <p class="hint">Want the upscaled version? Convert this video without fetching the link again.</p>
+          <button class="ghost upscale" type="button">Upscale to 4K 60 fps</button>
+          <p class="hint conversion-availability"></p>
+        </div>
       </div>
     </article>
   </template>

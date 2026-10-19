@@ -212,3 +212,28 @@ def test_cloud_ip_block_messages():
 
     assert classify_error("Sign in to confirm you're not a bot")[0] == "bot_check"
     assert classify_error("Your IP address is blocked from accessing this post")[0] == "ip_blocked"
+
+
+def test_anonymous_instagram_failure_does_not_require_website_login():
+    message = friendly_error("Instagram sent an empty media response; login required", False, False)
+    assert "anonymous requests" in message
+    assert "not a website password requirement" in message
+    assert "upload the video" in message
+    assert "can only be fetched while logged in" not in message
+
+
+@pytest.mark.parametrize("authenticated", [False, True])
+def test_instagram_audience_restriction_is_actionable(authenticated):
+    from app.extractor import classify_error
+
+    raw = (
+        "ERROR: [Instagram] DWtEagdgB6n: This content isn't available to everyone: "
+        "It can't be seen by certain audiences."
+    )
+    assert classify_error(raw)[0] == "audience_restricted"
+    message = friendly_error(raw, False, authenticated)
+    assert "restricts this post to certain audiences" in message
+    assert "did not specify which audience rule" in message
+    assert "Upload & convert" in message
+    assert ("anonymous requests" in message) is not authenticated
+    assert ("this server's site login" in message) is authenticated

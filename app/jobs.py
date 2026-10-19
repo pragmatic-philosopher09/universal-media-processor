@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import math
 import re
 import shutil
 import tempfile
@@ -35,7 +36,15 @@ from .enhance_ffmpeg import enhance_image, enhance_with_ffmpeg
 from .extractor import DownloadedItem, ExtractError, download
 from .media import CancelToken, FFmpegError, JobCancelled, VideoInfo, choose_encoder, ffprobe
 from .metrics import Metrics
-from .plan import FPS_PRESETS, RESOLUTION_PRESETS, EnhancePlan, PlanError, make_plan
+from .plan import (
+    CONVERSION_PRESETS,
+    FPS_PRESETS,
+    RESOLUTION_PRESETS,
+    EnhancePlan,
+    PlanError,
+    make_conversion_plan,
+    make_plan,
+)
 from .standardize import StandardizeOptions, make_standardize_plan, standardize_media
 from .uploads import Upload, UploadStore
 from .urls import InvalidURL, MediaURL, Platform, normalize_url
@@ -60,6 +69,7 @@ log = logging.getLogger(__name__)
 
 
 class JobStatus(StrEnum):
+    UPLOADING = "uploading"
     QUEUED = "queued"
     DOWNLOADING = "downloading"
     REVIEW = "review"
@@ -70,6 +80,7 @@ class JobStatus(StrEnum):
 
 
 ACTIVE_STATUSES = {
+    JobStatus.UPLOADING,
     JobStatus.QUEUED,
     JobStatus.DOWNLOADING,
     JobStatus.REVIEW,
@@ -136,7 +147,7 @@ class OutputFile:
     index: int
     path: Path
     download_name: str
-    kind: str  # original | enhanced | standardized
+    kind: str  # original | enhanced | standardized | converted
     media_id: str
     info: VideoInfo
     engine: str | None = None
@@ -157,6 +168,7 @@ class OutputFile:
             "download_name": self.download_name,
             "media_type": self.media_type,
             "is_image": self.info.is_image,
+            "has_audio": self.info.has_audio,
             "engine": self.engine,
             "treatments": list(self.treatments),
             "source_index": self.source_index,
@@ -224,6 +236,10 @@ class Job:
     client_is_local: bool = False
     inputs: list[JobInput] = field(default_factory=list)
     review: bool = False
+    # Single-file follow-up jobs (convert a video / upscale an image) bypass the MediaFlow pipeline.
+    upload_name: str | None = None
+    conversion_preset: str | None = None
+    image_resolution: str | None = None
     cancel: CancelToken = field(default_factory=CancelToken)
     approved: asyncio.Event = field(default_factory=asyncio.Event, repr=False)
     status: JobStatus = JobStatus.QUEUED
@@ -231,6 +247,7 @@ class Job:
     progress: float = 0.0
     error: str | None = None
     auth: str | None = None
+    source_provider: str | None = None
     sources: list[dict] = field(default_factory=list)
     items: list[SourceItem] = field(default_factory=list, repr=False)
     proposals: list[dict] | None = None
@@ -276,6 +293,8 @@ class Job:
         return len(self.inputs) > 1
 
     def _platform(self) -> tuple[str, str]:
+        if not self.inputs and self.target is None:
+            return "upload", "Downloaded image" if self.image_resolution else "Uploaded video"
         platforms = {i.target.platform_info for i in self.inputs if i.target}
         has_uploads = any(i.kind == "upload" for i in self.inputs)
         if len(platforms) == 1 and not has_uploads:
@@ -293,7 +312,16 @@ class Job:
             "platform": platform,
             "platform_name": platform_name,
             "kind": self.target.kind if self.target else "upload",
-            "options": self.options.to_dict(),
+            "upload_name": self.upload_name,
+            "conversion_preset": self.conversion_preset,
+            "image_resolution": self.image_resolution,
+            "options": (
+                {"mode": "upscale_image", "resolution": self.image_resolution, "engine": "ffmpeg"}
+                if self.image_resolution
+                else {"mode": "convert", "preset": self.conversion_preset, "engine": "ffmpeg"}
+                if self.conversion_preset
+                else self.options.to_dict()
+            ),
             "status": self.status.value,
             "stage": self.stage,
             "progress": round(self.progress, 4),
@@ -303,6 +331,7 @@ class Job:
             "inputs": [i.to_dict() for i in self.inputs],
             "item_count": len(self.inputs),
             "current_item": self.current_item,
+            "source_provider": self.source_provider,
             "sources": self.sources,
             "proposals": self.proposals,
             "plan": self.plan,
@@ -509,16 +538,7 @@ class JobManager:
             if any(matches):
                 use_cookies = matches
 
-        active = [
-            job
-            for job in self.jobs.values()
-            if job.client_ip == client_ip and job.status in ACTIVE_STATUSES
-        ]
-        if len(active) >= settings.max_jobs_per_ip:
-            raise TooManyJobs(
-                f"You already have {len(active)} job(s) running. Wait for them to finish first."
-            )
-
+        self._check_capacity(client_ip)
         job_id = uuid.uuid4().hex[:12]
         job_dir = settings.jobs_dir / job_id
         multi = len(targets) + len(uploads) > 1
@@ -570,8 +590,113 @@ class JobManager:
                 )
         self.jobs[job_id] = job
         self.metrics.job_created(options.mode, [i.kind for i in inputs], review)
-        job.task = asyncio.create_task(self._run(job), name=f"job-{job_id}")
+        self.enqueue(job)
         return job
+
+    def _check_capacity(self, client_ip: str) -> None:
+        active = [
+            job
+            for job in self.jobs.values()
+            if job.client_ip == client_ip and job.status in ACTIVE_STATUSES
+        ]
+        if len(active) >= self.settings.max_jobs_per_ip:
+            raise TooManyJobs(
+                f"You already have {len(active)} job(s) running. Wait for them to finish first."
+            )
+
+    def create_upload(self, filename: str, preset: str, client_ip: str) -> Job:
+        if not self.settings.enhancement_enabled:
+            raise ValueError("Video conversion is disabled on this server.")
+        if preset not in CONVERSION_PRESETS:
+            raise ValueError("Unknown conversion preset.")
+        job = self._reserve(None, JobOptions(engine="ffmpeg"), client_ip)
+        job.upload_name = safe_filename(Path(filename.replace("\\", "/")).stem, "video")
+        job.conversion_preset = preset
+        job.set_stage(JobStatus.UPLOADING, "Uploading video", 0.0)
+        return job
+
+    def convert_output(self, job_id: str, index: int, preset: str, client_ip: str) -> Job:
+        source_job = self.get(job_id)
+        if not source_job.done:
+            raise ValueError("Wait for the original download to finish before converting it.")
+        if index < 0 or index >= len(source_job.outputs):
+            raise IndexError("File not found")
+        output = source_job.outputs[index]
+        if output.info.is_image:
+            raise ValueError("This conversion requires a video, not an image.")
+        if not output.path.is_file():
+            raise FileNotFoundError("The original file has expired. Fetch the link again.")
+        job = self.create_upload(output.download_name, preset, client_ip)
+        accepted = False
+        try:
+            # Independent directory entry keeps the source alive if its original job expires.
+            (job.dir / "source.video").hardlink_to(output.path)
+            self.enqueue(job)
+            accepted = True
+            return job
+        finally:
+            if not accepted:
+                self.delete(job.id)
+
+    def _reserve(self, target: MediaURL | None, options: JobOptions, client_ip: str) -> Job:
+        """A single-file follow-up job (convert / upscale) that bypasses the MediaFlow pipeline."""
+        self._check_capacity(client_ip)
+        job_id = uuid.uuid4().hex[:12]
+        job = Job(
+            id=job_id,
+            target=target,
+            options=options,
+            client_ip=client_ip,
+            dir=self.settings.jobs_dir / job_id,
+        )
+        job.dir.mkdir(parents=True, exist_ok=True)
+        self.jobs[job_id] = job
+        return job
+
+    def upscale_image_output(self, job_id: str, index: int, resolution: str, client_ip: str) -> Job:
+        if not self.settings.enhancement_enabled:
+            raise ValueError("Image upscaling is disabled on this server.")
+        if resolution not in {"1440p", "2160p"}:
+            raise ValueError("Unknown image resolution.")
+        source = self.get(job_id)
+        if not source.done:
+            raise ValueError("Wait for the original download to finish.")
+        if index < 0 or index >= len(source.outputs):
+            raise IndexError("Image not found.")
+        output = source.outputs[index]
+        if not output.info.is_image:
+            raise ValueError("Image upscaling requires a still image.")
+        if not output.path.is_file():
+            raise FileNotFoundError("The original image has expired. Fetch it again.")
+        job = self._reserve(None, JobOptions(engine="ffmpeg"), client_ip)
+        job.image_resolution = resolution
+        job.upload_name = safe_filename(Path(output.download_name).stem, "image")
+        job.source_provider = source.source_provider
+        accepted = False
+        try:
+            (job.dir / "source.image").hardlink_to(output.path)
+            self.enqueue(job)
+            accepted = True
+            return job
+        finally:
+            if not accepted:
+                self.delete(job.id)
+
+    def enqueue(self, job: Job) -> None:
+        job.set_stage(JobStatus.QUEUED, "Queued", 0.0)
+        job.task = asyncio.create_task(self._run(job), name=f"job-{job.id}")
+
+        # A task cancelled before its first turn never reaches _run's exception handler.
+        def finish_cancelled(task: asyncio.Task) -> None:
+            if task.cancelled() and not job.done:
+                job.finish(JobStatus.CANCELLED, "Cancelled")
+                job.options.cookies = None
+                if job.conversion_preset:
+                    (job.dir / "source.video").unlink(missing_ok=True)
+                if job.image_resolution:
+                    (job.dir / "source.image").unlink(missing_ok=True)
+
+        job.task.add_done_callback(finish_cancelled)
 
     def cancel(self, job_id: str) -> Job:
         job = self.get(job_id)
@@ -706,8 +831,13 @@ class JobManager:
             else:
                 async with self._semaphore:
                     job.cancel.check()
-                    await self._gather(job)
-                    await self._process(job)
+                    if job.image_resolution:
+                        await self._upscale_image(job)
+                    elif job.conversion_preset:
+                        await self._convert_upload(job)
+                    else:
+                        await self._gather(job)
+                        await self._process(job)
         except (JobCancelled, asyncio.CancelledError):
             job.finish(JobStatus.CANCELLED, "Cancelled")
         except (
@@ -725,6 +855,14 @@ class JobManager:
             job.finish(JobStatus.ERROR, "Failed", f"Unexpected error: {exc}")
         finally:
             job.options.cookies = None
+            if job.conversion_preset:
+                (job.dir / "source.video").unlink(missing_ok=True)
+                if job.status != JobStatus.DONE:
+                    (job.dir / "converted.mp4").unlink(missing_ok=True)
+            if job.image_resolution:
+                (job.dir / "source.image").unlink(missing_ok=True)
+                if job.status != JobStatus.DONE:
+                    (job.dir / "upscaled.png").unlink(missing_ok=True)
             shutil.rmtree(job.dir / "chunks", ignore_errors=True)
             if job.status != JobStatus.DONE:
                 for stray in job.dir.rglob("*.part"):
@@ -739,7 +877,10 @@ class JobManager:
                 ],
             )
 
-    def _browser_login_allowed(self, job: Job) -> bool:
+    def _browser_login_allowed(self, job: Job, target: MediaURL | None = None) -> bool:
+        target = target or job.target
+        if target is None or target.platform != "instagram":
+            return False
         mode = self.settings.auto_browser_cookies
         return mode == "always" or (mode == "local" and job.client_is_local)
 
@@ -762,14 +903,21 @@ class JobManager:
         settings = self.settings
         platform = target.platform_info
         cookie_source = resolve_cookie_source(settings, cookies_text, platform)
-        browser_allowed = self._browser_login_allowed(job)
+        browser_allowed = self._browser_login_allowed(job, target)
         offset, width = span
 
         def progress(fraction: float, label: str) -> None:
             job.set_progress(offset + width * fraction, f"{prefix}{label}")
 
         blocked_until = self._anonymous_blocked_until.get(platform.id, 0.0)
-        skip_anonymous = target.requires_login or time.time() < blocked_until
+        public_provider = settings.fastvideosave_enabled and target.kind in {
+            "post",
+            "story",
+            "profile-stories",
+        }
+        skip_anonymous = (
+            target.requires_login or time.time() < blocked_until
+        ) and not public_provider
         if cookie_source.kind == "none" and browser_allowed and skip_anonymous:
             # Stories never work anonymously, and a recent refusal means reels won't either.
             progress(0.0, f"Looking for your browser's {platform.name} login…")
@@ -844,12 +992,23 @@ class JobManager:
                         job_input.auth = cookie_source.describe()
                         job.auth = job.auth or job_input.auth
                         items = list(result.items)
+                        provider = getattr(result, "provider", None)
+                        job.source_provider = job.source_provider or provider
+                        lead = f"{job_input.label}: " if job.multi else ""
+                        job.warnings.extend(f"{lead}{w}" for w in getattr(result, "warnings", []))
+                        if provider:
+                            job.warnings.append(
+                                f"{lead}Retrieved through {provider}, a third-party service. "
+                                "These are its supplied media renditions, not necessarily "
+                                "Instagram's highest quality."
+                            )
                     else:
+                        provider = None
                         job.set_progress(span[0], f"{prefix}Reading {job_input.label}")
                         items = [self._upload_item(job_input)]
                     job.cancel.check()
                     for item in items:
-                        await self._add_source(job, job_input, item)
+                        await self._add_source(job, job_input, item, provider)
                     job_input.item_count = len(items)
                     job_input.status = "ready"
                 except (ExtractError, FFmpegError, CookieError, InvalidURL, PlanError) as exc:
@@ -892,8 +1051,33 @@ class JobManager:
             info.is_image,
         )
 
-    async def _add_source(self, job: Job, job_input: JobInput, item: DownloadedItem) -> None:
-        info = await ffprobe(item.path, self.settings)
+    async def _add_source(
+        self,
+        job: Job,
+        job_input: JobInput,
+        item: DownloadedItem,
+        provider: str | None = None,
+    ) -> None:
+        settings = self.settings
+        info = await ffprobe(
+            item.path,
+            settings,
+            local_upload=bool(provider) and not item.is_image,
+            local_image=bool(provider) and item.is_image,
+            cancel=job.cancel,
+        )
+        if job_input.kind == "link" and not info.is_image and not info.has_audio:
+            job.warnings.append(
+                f"{item.media_id}: the retrieved file has no audio track. The original "
+                "post may still have sound; try fetching again later. Upscaling cannot "
+                "restore audio the source did not provide."
+            )
+        if provider and settings.max_source_duration_seconds:
+            if info.duration > settings.max_source_duration_seconds:
+                raise ExtractError(
+                    "The retrieved video exceeds the server's source duration limit.",
+                    "too_long",
+                )
         if job_input.kind == "upload":
             base_name = safe_filename(Path(job_input.label).stem, "upload")
             download_name = job_input.label
@@ -1034,6 +1218,93 @@ class JobManager:
             engine="ffmpeg/png" if source.info.is_image else f"ffmpeg/{encoder}",
             treatments=list(plan.treatments),
         )
+
+    async def _upscale_image(self, job: Job) -> None:
+        assert job.image_resolution is not None
+        src, dst = job.dir / "source.image", job.dir / "upscaled.png"
+        job.set_stage(JobStatus.ENHANCING, "Inspecting image", 0.0)
+        info = await ffprobe(src, self.settings, local_image=True, cancel=job.cancel)
+        if not info.is_image:
+            raise PlanError("Image upscaling requires a still image.")
+        plan = make_plan(info, job.image_resolution, "original")
+        job.sources = [{"title": job.upload_name, **info.to_dict()}]
+        job.plan = plan.to_dict()
+        job.engine = "ffmpeg"
+        job.set_progress(0.1, f"Upscaling image to {plan.target_width}x{plan.target_height}")
+        await enhance_image(plan, src, dst, settings=self.settings, cancel=job.cancel)
+        job.cancel.check()
+        result = await ffprobe(dst, self.settings, local_image=True, cancel=job.cancel)
+        if not result.is_image or (result.width, result.height) != (
+            plan.target_width,
+            plan.target_height,
+        ):
+            raise FFmpegError("Upscaled image did not match the requested dimensions.")
+        job.outputs = [
+            OutputFile(
+                index=0,
+                path=dst,
+                download_name=f"{job.upload_name}_{plan.label}.png",
+                kind="enhanced",
+                media_id=job.id,
+                info=result,
+                engine="ffmpeg/lanczos+cas",
+            )
+        ]
+        job.finish(JobStatus.DONE, "Ready to download image")
+
+    async def _convert_upload(self, job: Job) -> None:
+        settings = self.settings
+        assert job.conversion_preset is not None
+        src, dst = job.dir / "source.video", job.dir / "converted.mp4"
+        job.set_stage(JobStatus.ENHANCING, "Inspecting uploaded video", 0.0)
+        info = await ffprobe(src, settings, local_upload=True, cancel=job.cancel)
+        job.cancel.check()
+        if not math.isfinite(info.duration) or info.duration <= 0:
+            raise PlanError("The uploaded video has no readable duration.")
+        if settings.max_duration_seconds and info.duration > settings.max_duration_seconds:
+            raise PlanError(f"Video exceeds the {settings.max_duration_seconds}s conversion limit.")
+        plan = make_conversion_plan(info, job.conversion_preset)
+        job.sources = [{"title": job.upload_name, **info.to_dict()}]
+        job.plan = plan.to_dict()
+        job.engine = "ffmpeg"
+        encoder = await choose_encoder(settings)
+        job.set_stage(
+            JobStatus.ENHANCING,
+            f"Converting to {plan.target_width}x{plan.target_height} @ {plan.target_fps:.0f} fps",
+            0.0,
+        )
+        await enhance_with_ffmpeg(
+            plan,
+            src,
+            dst,
+            encoder=encoder,
+            settings=settings,
+            cancel=job.cancel,
+            on_progress=job.set_progress,
+            local_upload=True,
+        )
+        job.cancel.check()
+        output = await ffprobe(dst, settings, cancel=job.cancel)
+        if info.has_audio and not output.has_audio:
+            raise FFmpegError("Conversion lost the source audio track; no output was published.")
+        if (
+            (output.width, output.height) != (plan.target_width, plan.target_height)
+            or abs(output.fps - plan.target_fps) > 0.01
+            or output.duration <= 0
+        ):
+            raise FFmpegError("Converted video did not match the requested output preset.")
+        job.outputs = [
+            OutputFile(
+                index=0,
+                path=dst,
+                download_name=f"{job.upload_name}_{job.conversion_preset}.mp4",
+                kind="converted",
+                media_id=job.id,
+                info=output,
+                engine=f"ffmpeg/{encoder}",
+            )
+        ]
+        job.finish(JobStatus.DONE, "Ready to download")
 
     async def _enhance_item(
         self,

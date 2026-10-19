@@ -36,7 +36,7 @@ Every upload is re-encoded by Instagram. Its CDN tops out at **1080 × 1920, usu
 
 What this app does instead:
 
-1. **Always grabs the real top rendition.** Instagram exposes several progressive MP4s plus a
+1. **Ranks the renditions exposed by direct extraction.** Instagram exposes several progressive MP4s plus a
    DASH manifest per video; some renditions don't even carry a resolution. Many downloaders take
    whatever appears first. We decode the CDN's `efg` rendition tag to size unsized formats, rank
    everything by resolution → frame rate → bitrate, and merge the best video and audio streams.
@@ -57,6 +57,8 @@ What this app does instead:
 - **DeviantArt**: original image files and the highest film rendition (custom extractor —
   yt-dlp has none)
 - Best-rendition selection (yt-dlp with a custom format selector)
+- **Upload & convert**: upload a local video and download an MP4 in HD, Full HD, QHD or
+  4K, with presets up to **4K at 60 fps**; no platform link or login required
 - Enhancement presets: resolution *original / 1440p / 4K*, frame rate *original / 60*
 - Engines: **ffmpeg** (`minterpolate` + Lanczos + CAS) by default; **AI** (`rife-ncnn-vulkan` +
   `realesrgan-ncnn-vulkan`, or `video2x`) if you install the binaries — experimental
@@ -111,6 +113,110 @@ uvicorn app.main:app --host 127.0.0.1 --port 8000
 
 Open <http://127.0.0.1:8000>, paste a link, pick **Enhance → 4K 60 fps** or **Original**.
 
+The website defaults to **Original · fastest**: paste a supported public link, wait for the
+download card, and save the file. Enhancement is optional and takes longer; an explicitly
+selected preference is remembered in that browser. No app login is required unless an
+operator explicitly configures `APP_USERNAME` and `APP_PASSWORD`.
+After fetching an original video, click **Upscale to 4K 60 fps** on its result card.
+The app converts the already-downloaded file without contacting the source site again,
+then shows a separate **Download 4K 60 fps** button alongside the original.
+The original stays available if conversion is cancelled or fails.
+
+For an open public instance, leave both app credentials unset and set
+`AUTO_BROWSER_COOKIES=off`. Do not configure your personal site cookies on a public server.
+Anonymous access depends on the source platform and the individual post: a public link can
+still be restricted or rate-limited by Instagram. The app reports this rather than pretending
+that every link can be downloaded without a site login. Upload & convert remains available
+for videos you already have.
+
+### Optional FastVideoSave fallback
+
+Set `FASTVIDEOSAVE_ENABLED=1` to retrieve public Instagram photos, video posts, carousels
+and active stories through FastVideoSave's public website. Reels/IGTV still try direct
+extraction first, then use this provider if needed. Install its browser with
+`python -m playwright install chromium` (already included in the Docker image), or set
+`FASTVIDEOSAVE_BROWSER_CHANNEL=chrome` to use an installed Chrome.
+
+The app keeps its own UI: the server opens a fresh, temporary browser context, submits
+only the normalized public Instagram URL, and downloads the returned MP4/JPEG/PNG/WebP files directly from
+Instagram's CDN. No personal browser profile, Instagram cookies, Apify token or HikerAPI
+token is shared. The UI discloses this handoff and labels provider results. Anonymous
+`/p/` posts use the provider first so photo and mixed-carousel items are not silently
+dropped by the video-only direct extractor. If it fails, direct extraction is attempted,
+with an explicit warning that photos may be missing. Authenticated requests and highlights
+stay on the existing direct path; no personal cookies are sent to this provider.
+
+Paste `https://www.instagram.com/stories/username/` for available active stories, or a
+specific `https://www.instagram.com/stories/username/story-id/` link. Plain usernames and
+profile-page URLs are not story inputs. Private, expired and unavailable stories may fail.
+This is not access to an account's story archive. The provider may return fewer items
+than Instagram shows; availability is not guaranteed.
+
+Each photo has **Download photo** and **Upscale image to 4K** controls. Upscaling reuses
+the downloaded image, preserves the original, and produces a PNG bounded by 3840x2160
+(2160x3840 portrait; 2160x2160 square), preserving aspect ratio without cropping.
+Larger sources are not reduced. Photos have no frame rate: 60 fps applies only to videos.
+This uses classical Lanczos scaling/sharpening, not AI.
+
+Videos expose whether the retrieved file contains an audio track. If it does not, a
+warning explains that the original Instagram post may still have sound. Re-fetching
+can help when the provider later supplies a complete version, but cannot be guaranteed.
+Audio supplied by the provider is retained during download and preserved during conversion;
+upscaling cannot recreate missing audio.
+
+This is an **unofficial, optional integration**, not a supported API or an affiliation.
+Review the provider's terms and obtain any permission needed for your deployment. The
+provider sees submitted URLs and the server IP; its availability, limits, browser
+checks and page structure can change. Challenges are not bypassed. There is no guarantee
+of access or of the highest source rendition. Photo download links and video sources are
+collected in page order and deduplicated; video preview thumbnails are not treated as photos.
+Existing 4K60 conversion works on the retrieved MP4s.
+
+Metadata retrieval is bounded to roughly one minute per attempt. Transient browser
+connection errors, navigation timeouts and browser crashes get one retry in a fresh
+browser context (at most two attempts). Missing browser installations or system
+dependencies are reported separately; provider rejections and unsupported media are
+not retried. Runtime errors no longer instruct users to install Chromium when it is
+already running. Logs record failure categories, not raw errors with signed media URLs.
+Downloads share `MAX_UPLOAD_MB`
+as an aggregate size cap and are subject to `MAX_SOURCE_DURATION_SECONDS` after probing.
+Only HTTPS Instagram/Facebook CDN media addresses and redirects are accepted. Browser
+requests are limited to the provider and its browser-check host; ads are blocked.
+Disabling `FASTVIDEOSAVE_ENABLED` restores the direct-only path.
+
+Image conversion API: `POST /api/jobs/{id}/files/{index}/upscale?resolution=2160p`
+(`1440p` is also accepted). It uses the normal job status/download/cancellation endpoints,
+per-IP concurrency limit, enhancement enablement and file expiry. An independent hard link
+keeps the source alive if the original job expires during conversion. Uploaded-video
+conversion remains unchanged; this image endpoint operates on already-downloaded images.
+
+### Convert a video from your device
+
+Use **Upload & convert**, choose a video and an output quality, then click **Upload & convert**.
+The app shows upload progress followed by conversion progress, with cancellation and a
+**Download MP4** button when ready. Supported self-contained containers include MP4/MOV/M4V,
+MKV/WebM, AVI, MPEG/TS, FLV, Ogg and WMV/ASF, with codecs your server's ffmpeg can decode.
+Still images, audio-only files, playlists and corrupt or unsupported videos are rejected.
+
+Presets: **720p 30 fps**, **1080p 30 fps**, **1080p 60 fps**, **1440p 60 fps**,
+**4K 30 fps**, and **4K 60 fps**. Unlike link enhancement (which never reduces a source),
+conversion targets the selected resolution and exact frame rate, including downscaling or
+reducing higher-rate inputs. Aspect ratio and portrait orientation are preserved without
+cropping or stretching: a 16:9 4K output is 3840×2160, portrait is 2160×3840, and other aspect
+ratios fit within these bounds. MP4 uses the configured video encoder; compatible audio is
+copied, otherwise converted to AAC. Matching-resolution sources are still converted to MP4.
+
+This section uses **ffmpeg only, not AI**, even if optional AI binaries are installed.
+Lanczos scaling and motion-compensated interpolation cannot recover missing source detail.
+AI enhancement for uploaded videos is left for a future version.
+
+Videos are uploaded to the server, not processed in your browser. The default upload limit is
+**500 MiB** (`MAX_UPLOAD_MB`) and duration limit is **10 minutes** (`MAX_DURATION_SECONDS`).
+Upload and conversion jobs share the existing per-IP/concurrency limits. Source uploads are
+removed after processing; converted files expire after `JOB_TTL_MINUTES`. Aborted uploads
+and failed conversions are cleaned up. Configure reverse-proxy body limits and timeouts to
+allow large uploads. `ENHANCEMENT_ENABLED=false` disables this section too.
+
 ### Docker
 
 ```bash
@@ -147,6 +253,28 @@ your own domain). Oracle's Always Free ARM VM (4 cores / 24 GB) runs enhancement
 real time.
 
 ## Logins: stories, private accounts — and most reels
+
+### Protecting a personal public instance
+
+Set both `APP_USERNAME` and a long random `APP_PASSWORD` to require a browser sign-in
+(HTTP Basic authentication) for **every page, API route, upload, preview and download**.
+Use HTTPS for remote access; credentials are not encrypted by Basic authentication itself.
+Setting only one variable fails startup instead of silently leaving the app public.
+Keep credentials out of Git. API clients and health checks must supply the same Basic auth.
+
+For a password-protected instance on your own Mac, `AUTO_BROWSER_COOKIES=always` and
+`BROWSER_COOKIE_ORDER=chrome` allow Instagram downloads to reuse your Chrome login even
+through a public tunnel. **Every person with the app password can use your Instagram
+session**, including for content your account can access. This is for personal use, not
+an open public downloader. Browser-session discovery is restricted to Instagram; it
+does not automatically reuse your logins for other platforms. Browser cookies stay in
+memory, and the browser must already be logged in on the server machine.
+
+Restart after changing authentication settings and reload the page. Browsers cache Basic
+credentials; close a private browsing window to end its login, or rotate the server password.
+The app blocks cross-origin writes and framing when authentication is enabled.
+
+### Instagram credentials
 
 Instagram now login-walls almost everything for anonymous visitors (the API replies "not
 granting access", GraphQL returns empty, even the embed page is a login shell). Stories always
@@ -259,6 +387,7 @@ commented list. The important ones:
 | `MAX_JOBS_PER_IP` | `2` | active jobs per client |
 | `ENHANCEMENT_ENABLED` | `true` | `false` turns the app into a plain best-quality downloader (weak servers) |
 | `MAX_DURATION_SECONDS` | `600` | longest clip that will be *enhanced* |
+| `MAX_UPLOAD_MB` | `500` | largest uploaded video in MiB; conversion also uses `MAX_DURATION_SECONDS` |
 | `VIDEO_ENCODER` | `auto` | `libx264`, `libx265`, `h264_videotoolbox`, `h264_nvenc`, … |
 | `X264_PRESET` / `X264_CRF` | `medium` / `18` | software-encoder quality |
 | `SHARPEN` | `0.3` | CAS strength after upscaling, `0` disables |
@@ -285,17 +414,25 @@ commented list. The important ones:
 | `GET` | `/api/capabilities` | encoder, AI availability, auth status (incl. whether browser login applies to you), limits, outcomes, standardize presets, upload limits |
 | `POST` | `/api/uploads?filename=…` | raw file as the request body → `201 {"id", "filename", "size", "info"}` (`413` too large, `400` not media, `403` disabled) |
 | `DELETE` | `/api/uploads/{id}` | discard an upload that hasn't been used |
+| `POST` | `/api/convert?filename=video.mov&preset=2160p60` | raw video body (`application/octet-stream`, **not multipart**) → `202` conversion job; presets listed in `/api/capabilities`. `POST /api/uploads?…&preset=…` still works for older clients |
 | `POST` | `/api/jobs` | `{"url"?, "urls"?: [...], "uploads"?: [ids], "mode": "enhance"\|"original"\|"standardize", "resolution": "2160p"\|"1440p"\|"original", "fps": "60"\|"original", "engine": "auto"\|"ffmpeg"\|"ai", "standardize"?: {"canvas": "1920x1080"\|…\|"source", "fps": "30"\|…\|"source", "fit": "pad"\|"crop"}, "review"?: false, "cookies"?}` → `202` job. The v1 body (`{"url", …}`) still works unchanged |
 | `GET` | `/api/jobs/{id}` | status (`queued`, `downloading`, `review`, `enhancing`, `done`, `error`, `cancelled`), stage, progress, inputs, sources, proposals, plan, outputs (with `treatments`), warnings, failures |
 | `POST` | `/api/jobs/{id}/plan` | while in `review`: proposals for different options, without changing the job |
 | `POST` | `/api/jobs/{id}/start` | while in `review`: optionally new options, then process → `202` (`409` if not in review) |
 | `DELETE` | `/api/jobs/{id}` | cancel a running (or waiting) job or delete a finished one |
 | `GET` | `/api/jobs/{id}/files/{index}?inline=1` | download (or stream) an output |
+| `POST` | `/api/jobs/{id}/files/{index}/convert?preset=2160p60` | convert an existing video output without downloading it again → `202` job |
+| `POST` | `/api/jobs/{id}/files/{index}/upscale?resolution=2160p` | upscale an existing photo output to a PNG → `202` job |
 | `GET` | `/api/jobs/{id}/archive` | ZIP of all outputs + manifest (`409` until done) |
 | `GET` | `/api/jobs/{id}/manifest?format=json\|csv` | per-file dimensions, fps, codec, engine, treatments, SHA-256 |
 | `GET` | `/api/metrics` | aggregate, anonymous product metrics (`404` when `METRICS_ENABLED=false`) |
 
 Interactive docs at `/api/docs`.
+
+Upload example: `curl --data-binary @video.mov -H 'Content-Type: application/octet-stream' 'http://127.0.0.1:8000/api/uploads?filename=video.mov&preset=2160p60'`.
+Poll the returned job ID and use its output URL for download. Upload requests return `413`
+when too large, `429` at the per-IP limit, and `400` for empty uploads or disabled conversion.
+Video inspection and conversion errors appear in the job's `error` field.
 
 ## Performance expectations
 

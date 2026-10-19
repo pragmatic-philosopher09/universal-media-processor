@@ -7,13 +7,16 @@ import ipaddress
 import json
 import logging
 import platform
+import secrets
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated, Literal
 
+import anyio
 import yt_dlp
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.security import HTTPBasic
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -22,7 +25,8 @@ from .cookies import CookieError
 from .enhance_ai import ai_capabilities
 from .jobs import Job, JobManager, JobNotFound, JobOptions, JobStatus, NotInReview, TooManyJobs
 from .manifest import build_archive, build_manifest, ensure_checksums, manifest_csv
-from .media import choose_encoder, list_encoders
+from .media import JobCancelled, choose_encoder, list_encoders
+from .plan import CONVERSION_PRESETS, ConversionPreset
 from .standardize import CANVAS_PRESETS, FIT_MODES, STD_FPS_PRESETS, StandardizeOptions
 from .uploads import (
     ALLOWED_UPLOAD_EXTENSIONS,
@@ -117,6 +121,8 @@ def client_is_local(request: Request, settings: Settings) -> bool:
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or Settings.from_env()
+    if bool(settings.app_username) != bool(settings.app_password):
+        raise ValueError("Set both APP_USERNAME and APP_PASSWORD to enable app authentication.")
     manager = JobManager(settings)
 
     @asynccontextmanager
@@ -156,12 +162,66 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if job.status == JobStatus.DONE:
             manager.metrics.output_retrieved(job.id, job.created_at)
 
+    if settings.app_username and settings.app_password:
+        basic_auth = HTTPBasic(auto_error=False)
+        expected_user = settings.app_username.encode("utf-8")
+        expected_password = settings.app_password.encode("utf-8")
+
+        @app.middleware("http")
+        async def authenticate(request: Request, call_next):
+            try:
+                credentials = await basic_auth(request)
+            except HTTPException:
+                credentials = None
+            valid_user = secrets.compare_digest(
+                credentials.username.encode("utf-8") if credentials else b"", expected_user
+            )
+            valid_password = secrets.compare_digest(
+                credentials.password.encode("utf-8") if credentials else b"", expected_password
+            )
+            if not (valid_user and valid_password):
+                return JSONResponse(
+                    status_code=401,
+                    content={"detail": "Sign in with the app username and password."},
+                    headers={
+                        "WWW-Authenticate": 'Basic realm="Media Downloader", charset="UTF-8"',
+                        "Cache-Control": "no-store",
+                    },
+                )
+            if request.method not in {"GET", "HEAD", "OPTIONS"}:
+                origin = request.headers.get("origin")
+                expected_origin = f"{request.url.scheme}://{request.url.netloc}"
+                if request.headers.get("sec-fetch-site") == "cross-site" or (
+                    origin is not None and origin != expected_origin
+                ):
+                    return JSONResponse(
+                        status_code=403,
+                        content={"detail": "Cross-origin requests are not allowed."},
+                        headers={"Cache-Control": "no-store"},
+                    )
+            response = await call_next(request)
+            response.headers["Cache-Control"] = "no-store"
+            response.headers["Vary"] = "Authorization"
+            response.headers["X-Frame-Options"] = "DENY"
+            response.headers["Content-Security-Policy"] = "frame-ancestors 'none'"
+            response.headers["Referrer-Policy"] = "no-referrer"
+            return response
+
     @app.get("/api/capabilities")
     async def capabilities(request: Request) -> dict:
         encoders = await list_encoders(settings)
         encoder = await choose_encoder(settings)
         local = client_is_local(request, settings)
         return {
+            "instagram_fallback": "fastvideosave" if settings.fastvideosave_enabled else None,
+            "instagram_public_media": {
+                "photos": settings.fastvideosave_enabled,
+                "stories": settings.fastvideosave_enabled,
+            },
+            "image_upscale": {
+                "enabled": settings.enhancement_enabled,
+                "resolutions": ["1440p", "2160p"],
+            },
             "browser_login": {
                 "mode": settings.auto_browser_cookies,
                 "active_for_you": settings.auto_browser_cookies == "always"
@@ -184,6 +244,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 else "Enhancement is switched off on this server (not enough CPU); "
                 "originals download in the best quality the platform serves.",
             },
+            "conversion": {
+                "enabled": settings.enhancement_enabled,
+                "presets": [
+                    {"id": key, "label": value[0]} for key, value in CONVERSION_PRESETS.items()
+                ],
+                "output_format": "mp4",
+            },
             "platforms": [
                 {
                     "id": p.id,
@@ -203,6 +270,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "max_jobs_per_ip": settings.max_jobs_per_ip,
                 "job_ttl_minutes": settings.job_ttl_minutes,
                 "max_items_per_job": settings.max_items_per_job,
+                "max_upload_bytes": settings.max_upload_bytes,
             },
             "product": {"name": "MediaFlow", "version": APP_VERSION},
             "outcomes": [
@@ -229,7 +297,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         }
 
     @app.post("/api/uploads", status_code=201)
-    async def create_upload(request: Request, filename: str) -> dict:
+    async def create_upload(
+        request: Request,
+        response: Response,
+        filename: str = Query(..., min_length=1, max_length=255),
+        preset: ConversionPreset | None = None,
+    ) -> dict:
+        """Stage a file for a MediaFlow job. With `preset`, convert it right away instead
+        (the pre-MediaFlow behaviour of this endpoint, kept for existing clients)."""
+        if preset is not None:
+            response.status_code = 202
+            return await convert_upload(request, filename, preset)
         if not settings.uploads_enabled:
             raise HTTPException(status_code=403, detail="File uploads are disabled on this server.")
         declared = request.headers.get("content-length")
@@ -277,6 +355,57 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         except TooManyJobs as exc:
             raise HTTPException(status_code=429, detail=str(exc)) from exc
         return job.to_dict()
+
+    @app.post("/api/convert", status_code=202)
+    async def convert_upload(
+        request: Request,
+        filename: str = Query(..., min_length=1, max_length=255),
+        preset: ConversionPreset = "2160p60",
+    ) -> dict:
+        """Stream a raw video body (not multipart) into a bounded conversion job."""
+        if not settings.enhancement_enabled:
+            raise HTTPException(
+                status_code=400, detail="Video conversion is disabled on this server."
+            )
+        length = request.headers.get("content-length")
+        try:
+            expected = int(length) if length is not None else None
+            if expected is not None and expected < 0:
+                raise ValueError
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="Invalid Content-Length.") from exc
+        if expected is not None and expected > settings.max_upload_bytes:
+            raise HTTPException(
+                status_code=413, detail="Video exceeds the server upload size limit."
+            )
+        try:
+            job = manager.create_upload(filename, preset, client_ip(request, settings))
+        except TooManyJobs as exc:
+            raise HTTPException(status_code=429, detail=str(exc)) from exc
+        accepted = False
+        try:
+            size = 0
+            async with await anyio.open_file(job.dir / "source.video", "wb") as output:
+                async for chunk in request.stream():
+                    job.cancel.check()
+                    size += len(chunk)
+                    if size > settings.max_upload_bytes:
+                        raise HTTPException(
+                            status_code=413, detail="Video exceeds the server upload size limit."
+                        )
+                    await output.write(chunk)
+                    job.set_progress(size / expected if expected else 0)
+            if not size:
+                raise HTTPException(status_code=400, detail="The uploaded video is empty.")
+            job.cancel.check()
+            manager.enqueue(job)
+            accepted = True
+            return job.to_dict()
+        except JobCancelled as exc:
+            raise HTTPException(status_code=409, detail="Upload cancelled.") from exc
+        finally:
+            if not accepted:
+                manager.delete(job.id)
 
     @app.get("/api/jobs/{job_id}")
     async def get_job(job_id: str) -> dict:
@@ -343,6 +472,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail="Metrics are disabled")
         return manager.metrics.snapshot()
 
+    @app.post("/api/jobs/{job_id}/files/{index}/convert", status_code=202)
+    async def convert_file(
+        job_id: str, index: int, request: Request, preset: ConversionPreset = "2160p60"
+    ) -> dict:
+        try:
+            job = manager.convert_output(job_id, index, preset, client_ip(request, settings))
+        except (JobNotFound, IndexError) as exc:
+            raise HTTPException(status_code=404, detail="Original job or file not found.") from exc
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=410, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except TooManyJobs as exc:
+            raise HTTPException(status_code=429, detail=str(exc)) from exc
+        return job.to_dict()
+
     @app.delete("/api/jobs/{job_id}")
     async def delete_job(job_id: str) -> dict:
         job = find_job(job_id)
@@ -352,6 +497,27 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return {"status": "deleted"}
         manager.cancel(job_id)
         return {"status": "cancelling"}
+
+    @app.post("/api/jobs/{job_id}/files/{index}/upscale", status_code=202)
+    async def upscale_image_file(
+        job_id: str,
+        index: int,
+        request: Request,
+        resolution: Literal["1440p", "2160p"] = "2160p",
+    ) -> dict:
+        try:
+            job = manager.upscale_image_output(
+                job_id, index, resolution, client_ip(request, settings)
+            )
+        except (JobNotFound, IndexError) as exc:
+            raise HTTPException(status_code=404, detail="Original image not found.") from exc
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=410, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except TooManyJobs as exc:
+            raise HTTPException(status_code=429, detail=str(exc)) from exc
+        return job.to_dict()
 
     @app.get("/api/jobs/{job_id}/files/{index}")
     async def get_file(job_id: str, index: int, inline: bool = False) -> FileResponse:
