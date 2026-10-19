@@ -58,6 +58,45 @@ def test_browser_request_allowlist_blocks_ads_media_and_local_network():
     assert not fastvideosave.browser_request_allowed("https://fastvideosave.net:8000/", "fetch")
 
 
+def test_any_proxy_host_unwraps_only_to_instagram_cdn():
+    assert fastvideosave.media_url("https://new-proxy.example/dl?" + urlencode({"url": CDN})) == CDN
+    with pytest.raises(fastvideosave.FastVideoSaveError):
+        fastvideosave.media_url("https://new-proxy.example/dl?url=https://evil.test/v.mp4")
+
+
+def test_bundled_hosts_file_is_valid():
+    assert "api.getrequest.dev" in fastvideosave.read_api_hosts(fastvideosave.BUNDLED_HOSTS_FILE)
+
+
+def test_learned_hosts_round_trip_and_invalid_entries_dropped(tmp_path):
+    path = tmp_path / "hosts.json"
+    assert fastvideosave.read_api_hosts(path) == []
+    fastvideosave.write_api_hosts(path, ["api.new.example", "api.new.example", "localhost"])
+    assert fastvideosave.read_api_hosts(path) == ["api.new.example"]
+    path.write_text('{"api_hosts": ["ok.example", 3, "1.2.3.4", "a b.example", "x.example/p"]}')
+    assert fastvideosave.read_api_hosts(path) == ["ok.example"]
+    path.write_text("not json")
+    assert fastvideosave.read_api_hosts(path) == []
+
+
+def test_learned_hosts_are_used_per_request(browser, tmp_path):
+    settings = replace(Settings(), data_dir=tmp_path)
+    assert "api.new.example" not in fastvideosave.browser_hosts(settings)
+    fastvideosave.write_api_hosts(fastvideosave.learned_hosts_file(settings), ["api.new.example"])
+    assert "api.new.example" in fastvideosave.browser_hosts(settings)
+
+    page = browser.new_context.return_value.new_page.return_value
+    page.locator.return_value.evaluate_all.return_value = [CDN]
+    assert fastvideosave.fetch_media_urls(POST, settings, CancelToken()) == [CDN]
+    handler = browser.new_context.return_value.route.call_args[0][1]
+    for url, allowed in (("https://api.new.example/x", True), ("https://ads.example/", False)):
+        route = MagicMock()
+        route.request.url, route.request.resource_type = url, "fetch"
+        handler(route)
+        assert route.continue_.called is allowed
+        assert route.abort.called is not allowed
+
+
 def test_redirect_destination_is_checked():
     with pytest.raises(fastvideosave.FastVideoSaveError):
         fastvideosave._CDNRedirectHandler().redirect_request(

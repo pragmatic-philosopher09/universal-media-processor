@@ -152,6 +152,25 @@ profile-page URLs are not story inputs. Private, expired and unavailable stories
 This is not access to an account's story archive. The provider may return fewer items
 than Instagram shows; availability is not guaranteed.
 
+Instagram now serves many reels as separate video and audio streams, and FastVideoSave
+returns only the video. When a single provider video has no audio track, the server asks
+SnapSave's public page for the same link (same temporary, ad-blocked browser; public URL
+only) and copies its audio track onto the video without re-encoding, after checking the
+lengths match. If that fails the silent video is kept and the job shows a warning. Set
+`SNAPSAVE_AUDIO_ENABLED=0` to turn this off.
+
+FastVideoSave moves the API host its page calls (e.g. `api.videodropper.app` →
+`api.getrequest.dev`); the server's browser only talks to allow-listed hosts, so such a
+move makes every request time out. `python -m app.fastvideosave_probe` checks the provider
+and, if it broke, finds the host now returning Instagram media, verifies it, and saves it
+to `DATA_DIR/fastvideosave-hosts.json`, which the app re-reads per request (no restart).
+Run it periodically: `deploy/macos/install-fastvideosave-probe.sh` installs an hourly
+launchd job; on Linux use cron or a systemd timer. The scheduled GitHub workflow
+`.github/workflows/fastvideosave-health.yml` runs the same probe every 6 hours, opens a PR
+updating the bundled `app/fastvideosave_hosts.json` when the host moves, and opens an issue
+when the provider is down. `FASTVIDEOSAVE_PROBE_URLS` (comma-separated) overrides the
+public posts it tests with.
+
 Each photo has **Download photo** and **Upscale image to 4K** controls. Upscaling reuses
 the downloaded image, preserves the original, and produces a PNG bounded by 3840x2160
 (2160x3840 portrait; 2160x2160 square), preserving aspect ratio without cropping.

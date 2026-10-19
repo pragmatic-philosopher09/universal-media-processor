@@ -11,6 +11,7 @@ import base64
 import json
 import logging
 import re
+import subprocess
 import urllib.error
 import urllib.request
 from collections.abc import Callable
@@ -22,7 +23,7 @@ from urllib.parse import parse_qs, urlsplit
 import yt_dlp
 from yt_dlp.utils import DownloadCancelled, DownloadError, ExtractorError, FormatSorter
 
-from . import deviantart, fastvideosave
+from . import deviantart, fastvideosave, snapsave
 from .config import Settings
 from .cookies import CookieSource, apply_cookie_source_to_opts, inject_cookies
 from .media import CancelToken, JobCancelled
@@ -501,6 +502,7 @@ def download_instagram_media(
         paths = fastvideosave.download_media(urls, job_dir, settings, cancel, on_progress)
     except fastvideosave.FastVideoSaveError as exc:
         raise ExtractError(f"FastVideoSave fallback: {exc}", "fallback") from exc
+    warnings = restore_missing_audio(paths, target.url, settings, cancel, on_progress)
     code = target.url.rstrip("/").rsplit("/", 1)[-1]
     return ExtractResult(
         items=[
@@ -518,7 +520,40 @@ def download_instagram_media(
         title=f"Instagram {code}",
         uploader=None,
         provider="FastVideoSave",
+        warnings=warnings,
     )
+
+
+def restore_missing_audio(
+    paths: list[Path],
+    post_url: str,
+    settings: Settings,
+    cancel: CancelToken,
+    on_progress: ProgressHook | None = None,
+) -> list[str]:
+    """Instagram serves many reels as separate video and audio streams and FastVideoSave
+    only returns the video; fetch the audio for a single silent video from SnapSave."""
+    try:
+        silent = [path for path in paths if snapsave.is_silent_video(path, settings)]
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return []
+    if not silent:
+        return []
+    if len(paths) == 1 and settings.snapsave_audio_enabled:
+        if on_progress:
+            on_progress(0.97, "Instagram sent the video without sound; fetching the audio track")
+        try:
+            snapsave.add_audio(paths[0], post_url, settings, cancel)
+            return []
+        except (snapsave.SnapSaveError, OSError, ValueError, subprocess.SubprocessError) as exc:
+            log.warning("Could not restore Instagram audio: %s", exc)
+            reason = f" ({exc})"
+    else:
+        reason = ""
+    return [
+        "Instagram served this video without its audio track and the sound could not be "
+        f"restored{reason}. The download is silent; try again later."
+    ]
 
 
 def download_deviantart(

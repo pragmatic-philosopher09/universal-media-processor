@@ -1,0 +1,95 @@
+name: FastVideoSave health
+
+# Checks the Instagram fallback every 6 hours. If FastVideoSave moved its API, the probe
+# learns the new host and this workflow opens a PR updating app/fastvideosave_hosts.json.
+# If it is down with no new host to learn, an issue is opened (or commented on).
+on:
+  schedule:
+    - cron: "17 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: fastvideosave-health
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      GH_TOKEN: ${{ github.token }}
+      ISSUE_TITLE: "FastVideoSave Instagram fallback is failing"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install
+        run: |
+          pip install -q -r requirements.txt
+          python -m playwright install --with-deps chromium
+
+      - name: Probe FastVideoSave
+        id: probe
+        env:
+          DATA_DIR: ${{ runner.temp }}/data
+          DOTENV_PATH: /dev/null
+        run: |
+          set +e
+          python -m app.fastvideosave_probe --hosts-file app/fastvideosave_hosts.json > probe.json
+          code=$?
+          set -e
+          cat probe.json
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          {
+            echo "### FastVideoSave probe (exit $code)"
+            echo '```json'
+            cat probe.json
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          [ "$code" = 0 ] || [ "$code" = 10 ]
+
+      - name: Open PR with the learned host
+        if: steps.probe.outputs.code == '10'
+        run: |
+          branch=automation/fastvideosave-hosts
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -C "$branch"
+          git commit -qam "Follow FastVideoSave to its new API host" -m "$(cat probe.json)"
+          git push -qf origin "$branch"
+          body="FastVideoSave moved its API. The scheduled probe found and verified the new host:
+
+          \`\`\`json
+          $(cat probe.json)
+          \`\`\`
+
+          Servers running \`python -m app.fastvideosave_probe\` periodically have already adapted; this updates the bundled default."
+          gh pr view "$branch" --json state -q .state 2>/dev/null | grep -qx OPEN \
+            || gh pr create --head "$branch" --title "Follow FastVideoSave to its new API host" --body "$body" \
+            || gh issue create --title "FastVideoSave moved its API host" --body "$body
+
+          (Could not open a PR automatically; enable *Allow GitHub Actions to create pull requests* or merge branch \`$branch\` by hand.)"
+
+      - name: Report outage
+        if: failure() && steps.probe.outcome == 'failure'
+        run: |
+          body="Scheduled probe failed: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
+
+          \`\`\`json
+          $(cat probe.json 2>/dev/null)
+          \`\`\`"
+          number=$(gh issue list --state open --search "in:title \"$ISSUE_TITLE\"" --json number -q '.[0].number')
+          if [ -n "$number" ]; then
+            gh issue comment "$number" --body "$body"
+          else
+            gh issue create --title "$ISSUE_TITLE" --body "$body"
+          fi

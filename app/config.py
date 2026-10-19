@@ -157,6 +157,8 @@ class Settings:
     browser_cookie_order: tuple[str, ...] = DEFAULT_BROWSER_ORDER
     fastvideosave_enabled: bool = False
     fastvideosave_browser_channel: str | None = None
+    # Restore sound to FastVideoSave videos Instagram served without audio, via SnapSave.
+    snapsave_audio_enabled: bool = True
 
     # ffmpeg
     ffmpeg_bin: str = "ffmpeg"
@@ -250,6 +252,7 @@ class Settings:
             browser_cookie_order=browser_order,
             fastvideosave_enabled=_bool("FASTVIDEOSAVE_ENABLED", False),
             fastvideosave_browser_channel=_str("FASTVIDEOSAVE_BROWSER_CHANNEL"),
+            snapsave_audio_enabled=_bool("SNAPSAVE_AUDIO_ENABLED", True),
             ffmpeg_bin=_str("FFMPEG_BIN", "ffmpeg") or "ffmpeg",
             ffprobe_bin=_str("FFPROBE_BIN", "ffprobe") or "ffprobe",
             video_encoder=encoder,
