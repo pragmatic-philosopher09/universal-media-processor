@@ -177,7 +177,12 @@ def is_silent_video(path: Path, settings: Settings) -> bool:
 def add_audio(video: Path, post_url: str, settings: Settings, cancel: CancelToken) -> None:
     """Copy SnapSave's audio track onto `video` in place. Raises SnapSaveError on failure."""
     _, _, duration = stream_summary(video, settings)
-    links = fetch_video_urls(post_url, settings, cancel)
+    try:
+        links = fetch_video_urls(post_url, settings, cancel)
+    except SnapSaveError as exc:
+        # SnapSave intermittently stalls on a first request; one fresh attempt usually works.
+        log.info("SnapSave attempt 1/2 failed (%s); retrying", exc)
+        links = fetch_video_urls(post_url, settings, cancel)
     if len(links) != 1:
         raise SnapSaveError("SnapSave returned several items, so the audio could not be matched.")
     donor = video.with_name(video.stem + "-snapsave.part")

@@ -91,7 +91,16 @@ def test_provider_failure_keeps_silent_video_with_warning(monkeypatch, settings,
     )
     warnings = extractor.restore_missing_audio([silent], POST, settings, CancelToken())
     assert "without its audio track" in warnings[0] and "(down)" in warnings[0]
+    assert snapsave.fetch_video_urls.call_count == 2
     assert silent.exists()
+
+
+@requires_ffmpeg
+def test_transient_provider_failure_is_retried(monkeypatch, settings, silent, tmp_path):
+    fake_snapsave(monkeypatch, make_clip(tmp_path / "donor.mp4"))
+    snapsave.fetch_video_urls.side_effect = [snapsave.SnapSaveError("stall"), [LINK]]
+    assert extractor.restore_missing_audio([silent], POST, settings, CancelToken()) == []
+    assert snapsave.stream_summary(silent, settings)[1]
 
 
 @requires_ffmpeg
