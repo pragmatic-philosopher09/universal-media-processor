@@ -33,6 +33,17 @@ class FastVideoSaveError(RuntimeError):
     pass
 
 
+class FastVideoSaveStalled(FastVideoSaveError):
+    """The page loaded but no media appeared in time; usually transient, so retried once."""
+
+
+class FastVideoSaveStalledDetail(Exception):
+    """Carries what the page requested (hosts and HTTP statuses) for the server log."""
+
+
+ATTEMPT_SECONDS = 30
+
+
 def read_api_hosts(path: Path) -> list[str]:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -130,6 +141,10 @@ def fetch_media_urls(
         cancel.check()
         try:
             return _fetch_media_urls_once(url, settings, cancel, hosts)
+        except FastVideoSaveStalled as exc:
+            log.warning("FastVideoSave attempt %s/2 stalled (%s)", attempt + 1, exc.__cause__)
+            if attempt == 1:
+                raise
         except Error as exc:
             cancel.check()
             text = str(exc)
@@ -238,8 +253,17 @@ def _fetch_media_urls_once(
             )
             page = context.new_page()
             page.set_default_timeout(15000)
+            data_requests: list[str] = []
+            page.on(
+                "response",
+                lambda r: (
+                    data_requests.append(f"{urlsplit(r.url).hostname} {r.status}")
+                    if r.request.resource_type in {"fetch", "xhr"}
+                    else None
+                ),
+            )
             page.goto(provider_page_url(url), wait_until="domcontentloaded")
-            deadline = time.monotonic() + 45
+            deadline = time.monotonic() + ATTEMPT_SECONDS
             while time.monotonic() < deadline:
                 cancel.check()
                 sources = page.locator(MEDIA_SELECTOR).evaluate_all(MEDIA_SCRIPT)
@@ -254,11 +278,12 @@ def _fetch_media_urls_once(
                         "private, the story expired, or the provider temporarily unavailable."
                     )
                 page.wait_for_timeout(250)
-            raise FastVideoSaveError(
-                "FastVideoSave did not return media within 45 seconds. Its service may "
-                "be unavailable, require a browser check, or not support this post. "
-                "Try later or use Upload & convert."
-            )
+            # Hosts and status codes only: provider URLs can carry signed media links.
+            raise FastVideoSaveStalled(
+                "FastVideoSave did not return media after two tries. Its service may "
+                "be busy or unavailable, require a browser check, or not support this post. "
+                "Try again in a minute or use Upload & convert."
+            ) from FastVideoSaveStalledDetail(", ".join(data_requests[:10]) or "no data requests")
         finally:
             if browser.is_connected():
                 browser.close()

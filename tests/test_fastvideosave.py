@@ -236,11 +236,19 @@ def test_browser_cancellation_closes_browser(browser):
     browser.close.assert_called_once()
 
 
-def test_browser_timeout_closes_browser(browser, monkeypatch):
-    monkeypatch.setattr(fastvideosave.time, "monotonic", iter([0, 50]).__next__)
+def test_browser_timeout_retries_once_then_closes(browser, monkeypatch, caplog):
+    monkeypatch.setattr(fastvideosave.time, "monotonic", iter([0, 50, 0, 50]).__next__)
     with pytest.raises(fastvideosave.FastVideoSaveError, match="did not return media"):
         fastvideosave.fetch_media_urls(POST, Settings(), CancelToken())
-    browser.close.assert_called_once()
+    assert browser.close.call_count == 2
+    assert "attempt 2/2 stalled (no data requests)" in caplog.text
+
+
+def test_stalled_provider_succeeds_on_retry(browser, monkeypatch):
+    monkeypatch.setattr(fastvideosave.time, "monotonic", iter([0, 50, 0, 1]).__next__)
+    page = browser.new_context.return_value.new_page.return_value
+    page.locator.return_value.evaluate_all.return_value = [CDN]
+    assert fastvideosave.fetch_media_urls(POST, Settings(), CancelToken()) == [CDN]
 
 
 class Response(io.BytesIO):
