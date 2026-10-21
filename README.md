@@ -176,6 +176,17 @@ server's hourly probe report. Without it the runner probes itself, and a Cloudfl
 challenge is only a warning. `FASTVIDEOSAVE_PROBE_URLS` (comma-separated) overrides the
 public posts it tests with.
 
+**Faster downloads behind Tailscale Funnel.** Funnel traffic is relayed and can be capped
+around 0.1–0.2 MB/s, far below the host's uplink. `deploy/macos/install-download-tunnel.sh`
+runs a free cloudflared quick tunnel under launchd and sets `DOWNLOAD_TUNNEL_METRICS` in
+`.env` (restart the app afterwards). The UI stays on the stable Funnel hostname; finished
+files and zip archives requested through it are redirected (HTTP 307) to the tunnel's
+current `*.trycloudflare.com` hostname, which the app reads from cloudflared's metrics
+server and checks before use. If the tunnel is down, files are served directly as before.
+Requests to IP/localhost hosts are never redirected, and the redirect is off when app
+sign-in is enabled (credentials don't carry across hostnames). Uploads stay on Funnel, which
+has no 100 MB request-body limit.
+
 Each photo has **Download photo** and **Upscale image to 4K** controls. Upscaling reuses
 the downloaded image, preserves the original, and produces a PNG bounded by 3840x2160
 (2160x3840 portrait; 2160x2160 square), preserving aspect ratio without cropping.

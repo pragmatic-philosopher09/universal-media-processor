@@ -15,7 +15,7 @@ from typing import Annotated, Literal
 import anyio
 import yt_dlp
 from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
 from fastapi.security import HTTPBasic
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -23,6 +23,7 @@ from pydantic import BaseModel, Field
 from . import fastvideosave_probe
 from .config import Settings
 from .cookies import CookieError
+from .download_tunnel import DownloadTunnel
 from .enhance_ai import ai_capabilities
 from .jobs import Job, JobManager, JobNotFound, JobOptions, JobStatus, NotInReview, TooManyJobs
 from .manifest import build_archive, build_manifest, ensure_checksums, manifest_csv
@@ -162,6 +163,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def record_retrieval(job: Job) -> None:
         if job.status == JobStatus.DONE:
             manager.metrics.output_retrieved(job.id, job.created_at)
+
+    # Basic-auth credentials don't follow a redirect to another hostname, so only without auth.
+    auth_enabled = bool(settings.app_username and settings.app_password)
+    download_tunnel = DownloadTunnel(None if auth_enabled else settings.download_tunnel_metrics)
+
+    async def tunnel_redirect(request: Request) -> RedirectResponse | None:
+        url = await download_tunnel.redirect_url(
+            request.headers.get("host", ""), request.url.path, request.url.query
+        )
+        if url is None:
+            return None
+        return RedirectResponse(url, status_code=307, headers={"Cache-Control": "no-store"})
 
     @app.middleware("http")
     async def revalidate_frontend(request: Request, call_next):
@@ -465,11 +478,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             json.dumps(manifest, indent=2), media_type="application/json", headers=headers
         )
 
-    @app.get("/api/jobs/{job_id}/archive")
-    async def get_archive(job_id: str) -> FileResponse:
+    @app.get("/api/jobs/{job_id}/archive", response_model=None)
+    async def get_archive(job_id: str, request: Request) -> FileResponse | RedirectResponse:
         job = find_job(job_id)
         if job.status != JobStatus.DONE or not job.outputs:
             raise HTTPException(status_code=409, detail="The job has no finished files yet.")
+        if redirect := await tunnel_redirect(request):
+            return redirect
         lock = archive_locks.setdefault(job.id, asyncio.Lock())
         async with lock:
             if not job.dir.exists():
@@ -532,14 +547,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(status_code=429, detail=str(exc)) from exc
         return job.to_dict()
 
-    @app.get("/api/jobs/{job_id}/files/{index}")
-    async def get_file(job_id: str, index: int, inline: bool = False) -> FileResponse:
+    @app.get("/api/jobs/{job_id}/files/{index}", response_model=None)
+    async def get_file(
+        job_id: str, index: int, request: Request, inline: bool = False
+    ) -> FileResponse | RedirectResponse:
         job = find_job(job_id)
         if index < 0 or index >= len(job.outputs):
             raise HTTPException(status_code=404, detail="File not found")
         output = job.outputs[index]
         if not output.path.exists():
             raise HTTPException(status_code=410, detail="File has expired")
+        if redirect := await tunnel_redirect(request):
+            return redirect
         if not inline:
             record_retrieval(job)
         headers = {

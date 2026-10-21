@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import shutil
 import time
 from pathlib import Path
@@ -553,3 +554,46 @@ def test_cancelled_conversion_keeps_original(client):
     converted = wait_for(client, response.json()["id"])
     assert converted["status"] == "cancelled"
     assert client.get(url).status_code == 200
+
+
+def test_file_download_redirects_to_tunnel(settings, fake_download, monkeypatch):
+    from app import download_tunnel
+
+    monkeypatch.setattr(download_tunnel, "_fetch_hostname", lambda m: "fast.trycloudflare.com")
+    monkeypatch.setattr(download_tunnel, "_reachable", lambda hostname: True)
+    app = create_app(dataclasses.replace(settings, download_tunnel_metrics="127.0.0.1:20241"))
+    with TestClient(app) as client:
+        job = wait_for(client, client.post("/api/jobs", json={"url": REEL}).json()["id"])
+        assert job["status"] == "done"
+        path = f"/api/jobs/{job['id']}/files/0"
+        public = {"host": "media-processor.tail1ab246.ts.net"}
+        redirected = client.get(path + "?inline=1", headers=public, follow_redirects=False)
+        assert redirected.status_code == 307
+        assert redirected.headers["location"] == f"https://fast.trycloudflare.com{path}?inline=1"
+        tunnel = client.get(path, headers={"host": "fast.trycloudflare.com"})
+        assert tunnel.status_code == 200 and tunnel.content
+        assert client.get(path).status_code == 200
+
+
+def test_file_download_not_redirected_with_auth(settings, fake_download, monkeypatch):
+    from app import download_tunnel
+
+    monkeypatch.setattr(download_tunnel, "_fetch_hostname", lambda m: "fast.trycloudflare.com")
+    monkeypatch.setattr(download_tunnel, "_reachable", lambda hostname: True)
+    secured = dataclasses.replace(
+        settings, download_tunnel_metrics="127.0.0.1:20241", app_username="u", app_password="p"
+    )
+    with TestClient(create_app(secured)) as client:
+        auth = ("u", "p")
+        job_id = client.post("/api/jobs", json={"url": REEL}, auth=auth).json()["id"]
+        deadline = time.time() + 90
+        while client.get(f"/api/jobs/{job_id}", auth=auth).json()["status"] != "done":
+            assert time.time() < deadline
+            time.sleep(0.1)
+        response = client.get(
+            f"/api/jobs/{job_id}/files/0",
+            auth=auth,
+            headers={"host": "media-processor.tail1ab246.ts.net"},
+            follow_redirects=False,
+        )
+        assert response.status_code == 200
