@@ -123,7 +123,7 @@ def test_fallback_routing(monkeypatch, tmp_path):
         cancel,
     )
     fetch.assert_called_once_with(POST, settings, cancel)
-    assert result.provider == "FastVideoSave"
+    assert result.provider == "backup service"
     assert result.items[0].media_id == "DWtEagdgB6n"
     assert result.items[0].format_id == "fastvideosave"
 
@@ -190,7 +190,9 @@ def test_fallback_failure_is_explicit(monkeypatch, tmp_path):
         "fetch_media_urls",
         MagicMock(side_effect=fastvideosave.FastVideoSaveError("service unavailable")),
     )
-    with pytest.raises(extractor.ExtractError, match="FastVideoSave fallback: service unavailable"):
+    with pytest.raises(
+        extractor.ExtractError, match="Backup Instagram retrieval: service unavailable"
+    ):
         extractor.download(
             normalize_url(POST, DEFAULT_ALLOWED_DOMAINS),
             tmp_path,
@@ -446,7 +448,7 @@ def test_unclassified_runtime_error_does_not_suggest_installation(browser):
 
     page = browser.new_context.return_value.new_page.return_value
     page.locator.return_value.evaluate_all.side_effect = Error("Execution context was destroyed")
-    with pytest.raises(fastvideosave.FastVideoSaveError, match="browser request failed") as failure:
+    with pytest.raises(fastvideosave.FastVideoSaveError, match="service request failed") as failure:
         fastvideosave.fetch_media_urls(POST, Settings(), CancelToken())
     assert "install" not in str(failure.value)
     page.goto.assert_called_once()

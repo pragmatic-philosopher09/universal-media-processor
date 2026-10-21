@@ -45,6 +45,7 @@ from .plan import (
     make_conversion_plan,
     make_plan,
 )
+from .public_text import scrub, scrub_list, scrub_records
 from .standardize import StandardizeOptions, make_standardize_plan, standardize_media
 from .uploads import Upload, UploadStore
 from .urls import InvalidURL, MediaURL, Platform, normalize_url
@@ -323,22 +324,22 @@ class Job:
                 else self.options.to_dict()
             ),
             "status": self.status.value,
-            "stage": self.stage,
+            "stage": scrub(self.stage),
             "progress": round(self.progress, 4),
-            "error": self.error,
+            "error": scrub(self.error),
             "auth": self.auth,
             "review": self.review,
-            "inputs": [i.to_dict() for i in self.inputs],
+            "inputs": scrub_records([i.to_dict() for i in self.inputs], "error"),
             "item_count": len(self.inputs),
             "current_item": self.current_item,
             "source_provider": self.source_provider,
             "sources": self.sources,
-            "proposals": self.proposals,
+            "proposals": scrub_records(self.proposals, "warnings"),
             "plan": self.plan,
             "engine": self.engine,
             "outputs": [output.to_dict(self.id) for output in self.outputs],
-            "warnings": self.warnings,
-            "failures": self.failures,
+            "warnings": scrub_list(self.warnings),
+            "failures": scrub_records(self.failures, "error"),
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "finished_at": self.finished_at,
@@ -794,7 +795,7 @@ class JobManager:
                     )
                     if plan.upscale and engine == "ffmpeg":
                         proposal["warnings"].append(
-                            "Upscaling with ffmpeg makes the frame bigger and crisper, but it "
+                            "Classical upscaling makes the frame bigger and crisper, but it "
                             "can't recover detail that isn't in the source."
                         )
             elif options.mode == "standardize":
@@ -998,7 +999,7 @@ class JobManager:
                         job.warnings.extend(f"{lead}{w}" for w in getattr(result, "warnings", []))
                         if provider:
                             job.warnings.append(
-                                f"{lead}Retrieved through {provider}, a third-party service. "
+                                f"{lead}Retrieved through a backup service. "
                                 "These are its supplied media renditions, not necessarily "
                                 "Instagram's highest quality."
                             )
@@ -1426,8 +1427,8 @@ class JobManager:
         if requested == "ai":
             if not ai_engine:
                 raise AIEngineError(
-                    "AI enhancement isn't available on this server (rife-ncnn-vulkan / "
-                    "realesrgan-ncnn-vulkan or video2x not found). Choose the ffmpeg engine instead."
+                    "AI enhancement isn't available on this server. "
+                    "Choose the classical engine instead."
                 )
             return ai_engine
         return ai_engine or "ffmpeg"

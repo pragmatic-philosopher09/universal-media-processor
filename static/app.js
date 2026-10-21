@@ -248,7 +248,7 @@
         urlHint.textContent = "Story link — login is configured, you're good to go.";
         urlHint.classList.add("ok");
       } else if (kind === "story" && capabilities?.instagram_public_media?.stories) {
-        urlHint.textContent = "Public stories are fetched through FastVideoSave. Use a story link or instagram.com/stories/username/. Expired or private stories may be unavailable.";
+        urlHint.textContent = "Public stories can be fetched without a login. Use a story link or instagram.com/stories/username/. Expired or private stories may be unavailable.";
       } else if (browserLoginActive()) {
         urlHint.textContent = "Story link — your browser's Instagram login will be used automatically.";
         urlHint.classList.add("ok");
@@ -463,9 +463,9 @@
       aiOption.disabled = true;
       aiOption.textContent = "AI · not installed on this server";
       if (engineSelect.value === "ai") engineSelect.value = "auto";
-      engineHint.textContent = "ffmpeg on this server — AI binaries not installed.";
+      engineHint.textContent = "Classical engine on this server — the AI engine isn't installed.";
     } else {
-      engineHint.textContent = `AI available: ${ai.upscale_model} + ${ai.interpolation_model}. Slow, experimental.`;
+      engineHint.textContent = "AI engine available. Slow, experimental.";
     }
 
     if (caps.uploads && caps.uploads.enabled === false) {
@@ -499,14 +499,13 @@
       cookiesInput.placeholder = "User-supplied cookies are disabled on this server.";
     }
 
-    const enc = caps.ffmpeg ? caps.ffmpeg.encoder : "?";
-    const hw = caps.ffmpeg && caps.ffmpeg.hardware ? " (hardware)" : "";
+    const encoding = caps.ffmpeg && caps.ffmpeg.hardware ? "hardware encoding" : "software encoding";
     const limit = caps.limits ? `${Math.round(caps.limits.max_duration_seconds / 60)} min` : "";
     const enhancement = caps.enhancement && caps.enhancement.enabled === false
       ? "enhancement off (downloads and standardize only)"
-      : `encoder ${enc}${hw} · AI ${ai.available ? "ready" : "off"} · enhancement limit ${limit} per clip`;
+      : `${encoding} · AI ${ai.available ? "ready" : "off"} · enhancement limit ${limit} per clip`;
     const product = caps.product ? `${caps.product.name} ${caps.product.version} · ` : "";
-    capsEl.textContent = `${product}yt-dlp ${caps.yt_dlp_version} · ${enhancement} · files auto-delete after ${caps.limits ? caps.limits.job_ttl_minutes : "?"} min.`;
+    capsEl.textContent = `${product}${enhancement} · files auto-delete after ${caps.limits ? caps.limits.job_ttl_minutes : "?"} min.`;
     syncUrlHint();
     syncSubmit();
   };
@@ -582,7 +581,7 @@
     }
     if (job.plan && outcome === "enhance") {
       chipsEl.appendChild(chip("target", `${job.plan.target_width}×${job.plan.target_height} @ ${fmtFps(job.plan.target_fps)} fps`));
-      if (job.engine) chipsEl.appendChild(chip("engine", job.engine));
+      if (job.engine) chipsEl.appendChild(chip("engine", engineLabel(job.engine)));
     }
     if (outcome === "standardize" && job.options.standardize) {
       const s = job.options.standardize;
@@ -632,7 +631,7 @@
       flow.append(
         el("span", "frame", fmtFrame(p.source) + (!p.source.is_image && p.source.duration ? ` · ${fmtDuration(p.source.duration)}` : "")),
         el("span", "arrow", "→"),
-        el("span", `frame target ${p.action}`, describeTarget(p) + (p.engine ? ` · ${p.engine}` : "")),
+        el("span", `frame target ${p.action}`, describeTarget(p) + (p.engine ? ` · ${engineLabel(p.engine)} engine` : "")),
       );
       li.append(head, flow, badges(p.treatments));
       if (p.warnings && p.warnings.length) {
@@ -727,14 +726,17 @@
 
   // ------------------------------------------------------------------ results
 
+  // Engine ids name the underlying tools (e.g. "ffmpeg/h264_videotoolbox"); show only the kind.
+  const engineLabel = (engine) => (String(engine || "").startsWith("ffmpeg") ? "classical" : "AI");
+
   const kindLabel = (out, job) => {
-    if (out.kind === "converted") return `Converted MP4 · ${out.engine || "ffmpeg"}`;
-    if (out.kind === "enhanced") return `${out.is_image ? "Upscaled" : "Enhanced"} · ${out.engine || ""}`;
+    if (out.kind === "converted") return "Converted MP4";
+    if (out.kind === "enhanced") return `${out.is_image ? "Upscaled" : "Enhanced"} · ${engineLabel(out.engine)} engine`;
     if (out.kind === "standardized") return "Standardized for editing";
     if ((out.treatments || []).includes("uploaded")) return "Your file · untouched";
     const input = (job.inputs || [])[out.input_index];
     const platformName = (input && input.platform_name) || job.platform_name || "the platform";
-    if (job.source_provider) return `Original · supplied by ${job.source_provider}`;
+    if (job.source_provider) return "Original · retrieved via a backup service";
     return `Original · best rendition ${platformName} serves`;
   };
 

@@ -465,8 +465,8 @@ def download(
                     "fallback",
                 ) from direct_error
             result.warnings.append(
-                "FastVideoSave was unavailable. Direct Instagram retrieval returned video "
-                "items only; any photos in the post or stories may be missing."
+                "The backup Instagram service was unavailable. Direct Instagram retrieval "
+                "returned video items only; any photos in the post or stories may be missing."
             )
             return result
     try:
@@ -483,7 +483,7 @@ def download(
         cancel.check()
         log.info("Instagram %s; trying the configured FastVideoSave fallback", exc.kind)
         if on_progress:
-            on_progress(0.0, "Instagram direct fetch failed; contacting FastVideoSave")
+            on_progress(0.0, "Instagram direct fetch failed; trying the backup service")
         return download_instagram_media(target, job_dir, settings, cancel, on_progress)
 
 
@@ -496,12 +496,12 @@ def download_instagram_media(
 ) -> ExtractResult:
     cancel.check()
     if on_progress:
-        on_progress(0.0, "Retrieving Instagram photos and videos through FastVideoSave")
+        on_progress(0.0, "Retrieving Instagram photos and videos")
     try:
         urls = fastvideosave.fetch_media_urls(target.url, settings, cancel)
         paths = fastvideosave.download_media(urls, job_dir, settings, cancel, on_progress)
     except fastvideosave.FastVideoSaveError as exc:
-        raise ExtractError(f"FastVideoSave fallback: {exc}", "fallback") from exc
+        raise ExtractError(f"Backup Instagram retrieval: {exc}", "fallback") from exc
     warnings = restore_missing_audio(paths, target.url, settings, cancel, on_progress)
     code = target.url.rstrip("/").rsplit("/", 1)[-1]
     return ExtractResult(
@@ -519,7 +519,7 @@ def download_instagram_media(
         ],
         title=f"Instagram {code}",
         uploader=None,
-        provider="FastVideoSave",
+        provider="backup service",
         warnings=warnings,
     )
 
@@ -547,12 +547,9 @@ def restore_missing_audio(
             return []
         except (snapsave.SnapSaveError, OSError, ValueError, subprocess.SubprocessError) as exc:
             log.warning("Could not restore Instagram audio: %s", exc)
-            reason = f" ({exc})"
-    else:
-        reason = ""
     return [
         "Instagram served this video without its audio track and the sound could not be "
-        f"restored{reason}. The download is silent; try again later."
+        "restored. The download is silent; try again later."
     ]
 
 

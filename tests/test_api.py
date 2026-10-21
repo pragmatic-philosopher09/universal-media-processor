@@ -97,7 +97,7 @@ def test_fallback_provenance_and_source_limit(settings, fake_download, monkeypat
 
     def fallback(*args):
         result = original_download(*args)
-        result.provider = "FastVideoSave"
+        result.provider = "backup service"
         return result
 
     monkeypatch.setattr(jobs_module, "download", fallback)
@@ -114,8 +114,8 @@ def test_fallback_provenance_and_source_limit(settings, fake_download, monkeypat
             created = client.post("/api/jobs", json={"url": REEL, "mode": "original"}).json()
             job = wait_for(client, created["id"])
             assert job["status"] == expected
-            assert job["source_provider"] == "FastVideoSave"
-            assert any("FastVideoSave" in warning for warning in job["warnings"])
+            assert job["source_provider"] == "backup service"
+            assert any("backup service" in warning for warning in job["warnings"])
             if expected == "done":
                 assert job["outputs"][0]["has_audio"] is True
                 assert client.get(job["outputs"][0]["url"]).status_code == 200

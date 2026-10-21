@@ -94,7 +94,7 @@ def _https_host(url: str) -> str:
             return parsed.hostname or ""
     except ValueError:
         pass
-    raise FastVideoSaveError("FastVideoSave returned an invalid media address.")
+    raise FastVideoSaveError("The backup service returned an invalid media address.")
 
 
 def _is_cdn_host(host: str) -> bool:
@@ -103,7 +103,7 @@ def _is_cdn_host(host: str) -> bool:
 
 def validate_cdn_url(url: str) -> str:
     if not _is_cdn_host(_https_host(url)):
-        raise FastVideoSaveError("FastVideoSave returned a non-Instagram media address.")
+        raise FastVideoSaveError("The backup service returned a non-Instagram media address.")
     return url
 
 
@@ -113,7 +113,7 @@ def media_url(url: str) -> str:
     if not _is_cdn_host(_https_host(url)):
         values = parse_qs(urlsplit(url).query).get("url", [])
         if len(values) != 1:
-            raise FastVideoSaveError("FastVideoSave returned an invalid download link.")
+            raise FastVideoSaveError("The backup service returned an invalid download link.")
         url = values[0]
     return validate_cdn_url(url)
 
@@ -150,7 +150,7 @@ def fetch_media_urls(
             text = str(exc)
             if isinstance(exc, TimeoutError):
                 reason = "timeout"
-                message = "FastVideoSave timed out. Try again later."
+                message = "The backup service timed out. Try again later."
             elif any(
                 marker in text
                 for marker in (
@@ -166,7 +166,7 @@ def fetch_media_urls(
             ):
                 reason = "network"
                 message = (
-                    "Could not connect to FastVideoSave from this server. Check its network "
+                    "Could not connect to the backup service from this server. Check its network "
                     "connection or try again later."
                 )
             elif (
@@ -174,13 +174,13 @@ def fetch_media_urls(
             ):
                 reason = "browser_closed"
                 message = (
-                    "The FastVideoSave browser closed or crashed while retrieving media. "
+                    "The server's retrieval browser closed or crashed while retrieving media. "
                     "Try again later; the server may be low on memory."
                 )
             else:
                 log.warning("FastVideoSave browser request failed (unclassified Playwright error)")
                 raise FastVideoSaveError(
-                    "The FastVideoSave browser request failed. Its page may have changed "
+                    "The backup service request failed. It may have changed "
                     "or rejected the request. Try again later or use Upload & convert."
                 ) from exc
             # Do not log raw Playwright errors: they can contain signed media URLs.
@@ -202,17 +202,23 @@ def launch_browser(playwright, settings: Settings):
         if "Executable doesn't exist" in text or (
             "distribution" in text and "is not found" in text
         ):
-            log.warning("FastVideoSave browser launch failed (browser missing)")
+            log.warning(
+                "FastVideoSave browser launch failed (browser missing). Install Playwright "
+                "Chromium (python -m playwright install chromium) and unset "
+                "FASTVIDEOSAVE_BROWSER_CHANNEL, or install the configured channel."
+            )
             raise FastVideoSaveError(
-                "The configured FastVideoSave browser is not installed on the server. "
-                "Install Playwright Chromium (python -m playwright install chromium) "
-                "and unset FASTVIDEOSAVE_BROWSER_CHANNEL, or install the configured channel."
+                "The server's retrieval browser is not installed. The server operator "
+                "should check the server log."
             ) from exc
         if "Host system is missing dependencies" in text:
-            log.warning("FastVideoSave browser launch failed (system dependencies missing)")
+            log.warning(
+                "FastVideoSave browser launch failed (system dependencies missing). "
+                "Run python -m playwright install --with-deps chromium."
+            )
             raise FastVideoSaveError(
-                "The FastVideoSave browser is missing system libraries. The server "
-                "operator must run python -m playwright install --with-deps chromium."
+                "The server's retrieval browser is missing system libraries. The server "
+                "operator should check the server log."
             ) from exc
         raise
 
@@ -270,17 +276,19 @@ def _fetch_media_urls_once(
                 if sources:
                     urls = list(dict.fromkeys(media_url(src) for src in sources))
                     if len(urls) > 50:
-                        raise FastVideoSaveError("FastVideoSave returned too many media items.")
+                        raise FastVideoSaveError(
+                            "The backup service returned too many media items."
+                        )
                     return urls
                 if page.get_by_text("Oops! Something went wrong", exact=True).count():
                     raise FastVideoSaveError(
-                        "FastVideoSave could not retrieve this media. The account may be "
+                        "The backup service could not retrieve this media. The account may be "
                         "private, the story expired, or the provider temporarily unavailable."
                     )
                 page.wait_for_timeout(250)
             # Hosts and status codes only: provider URLs can carry signed media links.
             raise FastVideoSaveStalled(
-                "FastVideoSave did not return media after two tries. Its service may "
+                "The backup service did not return media after two tries. It may "
                 "be busy or unavailable, require a browser check, or not support this post. "
                 "Try again in a minute or use Upload & convert."
             ) from FastVideoSaveStalledDetail(", ".join(data_requests[:10]) or "no data requests")
@@ -315,7 +323,7 @@ def download_media(
     on_progress: Callable[[float, str], None] | None = None,
 ) -> list[Path]:
     if not urls or len(urls) > 50:
-        raise FastVideoSaveError("FastVideoSave must return between 1 and 50 media items.")
+        raise FastVideoSaveError("The backup service must return between 1 and 50 media items.")
     paths: list[Path] = []
     total_size = 0
     deadline = time.monotonic() + 120
@@ -335,7 +343,7 @@ def download_media(
                 while True:
                     cancel.check()
                     if time.monotonic() >= deadline:
-                        raise FastVideoSaveError("FastVideoSave media download timed out.")
+                        raise FastVideoSaveError("The media download timed out.")
                     chunk = response.read(256 * 1024)
                     if not chunk:
                         break
@@ -345,17 +353,16 @@ def download_media(
                     total_size += len(chunk)
                     if total_size > settings.max_upload_bytes:
                         raise FastVideoSaveError(
-                            "FastVideoSave media exceeds the server's upload/download size limit."
+                            "The media exceeds the server's upload/download size limit."
                         )
                     output.write(chunk)
                     if on_progress:
                         on_progress(
                             index / len(urls),
-                            f"Downloading FastVideoSave media {index + 1}/{len(urls)} "
-                            f"({size // 1024} KiB)",
+                            f"Downloading media {index + 1}/{len(urls)} ({size // 1024} KiB)",
                         )
                 if not size:
-                    raise FastVideoSaveError("FastVideoSave returned an empty media file.")
+                    raise FastVideoSaveError("The backup service returned an empty media file.")
             final = path.with_suffix("." + extension)
             path.rename(final)
             paths[-1] = final
@@ -366,6 +373,6 @@ def download_media(
         if isinstance(exc, (FastVideoSaveError, JobCancelled)):
             raise
         raise FastVideoSaveError(
-            "Could not save the FastVideoSave video. The media link may have expired, "
+            "Could not save the video. The media link may have expired, "
             "or the server's network/storage is unavailable."
         ) from exc

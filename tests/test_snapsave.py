@@ -76,21 +76,23 @@ def test_videos_with_audio_are_left_alone(monkeypatch, settings, tmp_path):
 
 
 @requires_ffmpeg
-def test_mismatched_donor_is_rejected_and_warned(monkeypatch, settings, silent, tmp_path):
+def test_mismatched_donor_is_rejected_and_warned(monkeypatch, settings, silent, tmp_path, caplog):
     fake_snapsave(monkeypatch, make_clip(tmp_path / "donor.mp4", seconds=3))
     warnings = extractor.restore_missing_audio([silent], POST, settings, CancelToken())
-    assert "does not match" in warnings[0]
+    assert "could not be restored" in warnings[0]
+    assert "does not match" in caplog.text
     assert snapsave.is_silent_video(silent, settings)
     assert sorted(p.name for p in tmp_path.iterdir()) == ["donor.mp4", silent.name]
 
 
 @requires_ffmpeg
-def test_provider_failure_keeps_silent_video_with_warning(monkeypatch, settings, silent):
+def test_provider_failure_keeps_silent_video_with_warning(monkeypatch, settings, silent, caplog):
     monkeypatch.setattr(
         snapsave, "fetch_video_urls", MagicMock(side_effect=snapsave.SnapSaveError("down"))
     )
     warnings = extractor.restore_missing_audio([silent], POST, settings, CancelToken())
-    assert "without its audio track" in warnings[0] and "(down)" in warnings[0]
+    assert "without its audio track" in warnings[0] and "SnapSave" not in warnings[0]
+    assert "audio: down" in caplog.text
     assert snapsave.fetch_video_urls.call_count == 2
     assert silent.exists()
 

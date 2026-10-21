@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>MediaFlow · Media Downloader — links or files in, clean labelled media out</title>
   <meta name="description" content="Bring media in from Instagram, YouTube, TikTok, DeviantArt or your own files, choose an outcome — keep the original, enhance to 4K 60 fps, or standardize for editing — review the plan and download clearly labelled results." />
-  <link rel="stylesheet" href="/style.css?v=2.0.1" />
+  <link rel="stylesheet" href="/style.css?v=2.0.2" />
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%23141414'/%3E%3Cpath d='M18 40c8 0 8-16 16-16s8 16 12 16' fill='none' stroke='%23fff' stroke-width='5' stroke-linecap='round'/%3E%3C/svg%3E" />
 </head>
 <body>
@@ -99,8 +99,8 @@
             <span class="field-label">Engine</span>
             <select name="engine">
               <option value="auto" selected>Automatic</option>
-              <option value="ffmpeg">ffmpeg (classical)</option>
-              <option value="ai" id="engine-ai">AI — RIFE + Real-ESRGAN (experimental)</option>
+              <option value="ffmpeg">Classical</option>
+              <option value="ai" id="engine-ai">AI (experimental)</option>
             </select>
             <span id="engine-hint" class="hint"></span>
           </label>
@@ -223,9 +223,9 @@
           DeviantArt serves the original image file). Every downloader that reports 4K from Instagram is upscaling.
           This app is honest about it — it fetches the best rendition that exists, and the
           <em>Enhance</em> mode computes the 4K 60 fps version here. The default engine is classical
-          signal processing (ffmpeg motion-compensated interpolation, Lanczos scaling, contrast-adaptive
-          sharpening) — smooth and natural, but it cannot invent detail. The optional AI engine (RIFE +
-          Real-ESRGAN neural networks) can, but it needs extra binaries and is experimental and unverified.
+          signal processing (motion-compensated interpolation, Lanczos scaling, contrast-adaptive
+          sharpening) — smooth and natural, but it cannot invent detail. The optional AI engine (neural
+          networks) can, but it needs extra binaries and is experimental and unverified.
         </p>
       </details>
       <details class="reality">
@@ -265,6 +265,6 @@
     </article>
   </template>
 
-  <script src="/app.js?v=2.0.1" defer></script>
+  <script src="/app.js?v=2.0.2" defer></script>
 </body>
 </html>

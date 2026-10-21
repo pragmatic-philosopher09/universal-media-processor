@@ -180,7 +180,7 @@ async def ffprobe(
         if cancel:
             cancel.unregister(proc)
     if proc.returncode != 0:
-        raise FFmpegError(f"ffprobe failed for {path.name}: {err.decode(errors='replace').strip()}")
+        raise FFmpegError(f"Could not read {path.name}: {err.decode(errors='replace').strip()}")
     data = json.loads(out or b"{}")
     streams = data.get("streams", [])
     video = next((s for s in streams if s.get("codec_type") == "video"), None)
@@ -418,7 +418,7 @@ async def run_ffmpeg(
             raise result
     if proc.returncode != 0:
         tail = "\n".join(stderr_tail).strip() or f"exit code {proc.returncode}"
-        raise FFmpegError(f"ffmpeg failed: {tail}")
+        raise FFmpegError(f"Video processing failed: {tail}")
 
 
 async def run_tool(
