@@ -46,7 +46,7 @@ def test_redirects_public_host_and_caches(tunnel_up):
     first, second = anyio.run(run)
     assert first == "https://fast-words.trycloudflare.com/api/jobs/a/files/0?inline=1"
     assert second == "https://fast-words.trycloudflare.com/api/jobs/a/archive"
-    assert tunnel_up["fetch"] == 1
+    assert tunnel_up["fetch"] == 2
 
 
 def test_no_redirect_on_tunnel_or_direct_host(tunnel_up):
@@ -75,3 +75,17 @@ def test_disabled_or_unhealthy_tunnel_serves_directly(monkeypatch):
     )
     monkeypatch.setattr(download_tunnel, "_reachable", lambda hostname: False)
     assert anyio.run(DownloadTunnel("127.0.0.1:1").redirect_url, "app.ts.net", "/x", "") is None
+
+
+def test_restarted_tunnel_hostname_is_picked_up(monkeypatch):
+    names = iter(["old.trycloudflare.com", "new.trycloudflare.com"])
+    checked: list[str] = []
+    monkeypatch.setattr(download_tunnel, "_fetch_hostname", lambda metrics: next(names))
+    monkeypatch.setattr(download_tunnel, "_reachable", lambda h: checked.append(h) or True)
+    tunnel = DownloadTunnel("127.0.0.1:20241")
+
+    async def run():
+        return [await tunnel.hostname(), await tunnel.hostname()]
+
+    assert anyio.run(run) == ["old.trycloudflare.com", "new.trycloudflare.com"]
+    assert checked == ["old.trycloudflare.com", "new.trycloudflare.com"]

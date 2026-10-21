@@ -19,8 +19,8 @@ import anyio
 
 log = logging.getLogger(__name__)
 
-OK_TTL = 120.0
-FAIL_TTL = 20.0
+OK_TTL = 300.0
+FAIL_TTL = 10.0
 TIMEOUT = 4.0
 
 
@@ -55,28 +55,34 @@ def is_direct_host(host: str) -> bool:
 class DownloadTunnel:
     def __init__(self, metrics: str | None) -> None:
         self.metrics = (metrics or "").strip() or None
-        self._hostname: str | None = None
-        self._expires = 0.0
+        # Reachability is cached per hostname; the hostname itself is re-read every time (a local,
+        # millisecond call) so a restarted tunnel's new hostname is picked up immediately.
+        self._checked: tuple[str, bool, float] | None = None
         self._lock = anyio.Lock()
 
     async def hostname(self) -> str | None:
         if not self.metrics:
             return None
+        try:
+            candidate = await anyio.to_thread.run_sync(_fetch_hostname, self.metrics)
+        except Exception as exc:  # noqa: BLE001 - any failure just disables the redirect
+            log.debug("download tunnel metrics unavailable: %s", exc)
+            return None
+        if not candidate:
+            return None
         async with self._lock:
-            if time.monotonic() < self._expires:
-                return self._hostname
-            hostname = None
+            now = time.monotonic()
+            if self._checked and self._checked[0] == candidate and now < self._checked[2]:
+                return candidate if self._checked[1] else None
             try:
-                candidate = await anyio.to_thread.run_sync(_fetch_hostname, self.metrics)
-                if candidate and await anyio.to_thread.run_sync(_reachable, candidate):
-                    hostname = candidate
-            except Exception as exc:  # noqa: BLE001 - any failure just disables the redirect
-                log.info("download tunnel unavailable: %s", exc)
-            if hostname != self._hostname:
-                log.info("download tunnel hostname: %s", hostname or "none")
-            self._hostname = hostname
-            self._expires = time.monotonic() + (OK_TTL if hostname else FAIL_TTL)
-            return hostname
+                ok = await anyio.to_thread.run_sync(_reachable, candidate)
+            except Exception as exc:  # noqa: BLE001
+                log.info("download tunnel %s not reachable yet: %s", candidate, exc)
+                ok = False
+            if ok and (not self._checked or self._checked[0] != candidate or not self._checked[1]):
+                log.info("download tunnel hostname: %s", candidate)
+            self._checked = (candidate, ok, now + (OK_TTL if ok else FAIL_TTL))
+            return candidate if ok else None
 
     async def redirect_url(self, host: str, path: str, query: str) -> str | None:
         """Absolute URL on the tunnel for this request, or None to serve it directly."""
