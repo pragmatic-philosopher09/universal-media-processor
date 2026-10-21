@@ -166,7 +166,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     # Basic-auth credentials don't follow a redirect to another hostname, so only without auth.
     auth_enabled = bool(settings.app_username and settings.app_password)
-    download_tunnel = DownloadTunnel(None if auth_enabled else settings.download_tunnel_metrics)
+    download_tunnel = (
+        DownloadTunnel(None)
+        if auth_enabled
+        else DownloadTunnel(settings.download_tunnel_metrics, settings.download_tunnel_hostname)
+    )
 
     async def tunnel_redirect(request: Request) -> RedirectResponse | None:
         url = await download_tunnel.redirect_url(

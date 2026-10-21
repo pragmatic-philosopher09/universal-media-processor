@@ -187,6 +187,12 @@ Requests to IP/localhost hosts are never redirected, and the redirect is off whe
 sign-in is enabled (credentials don't carry across hostnames). Uploads stay on Funnel, which
 has no 100 MB request-body limit.
 
+For a permanent address on a domain in your (free) Cloudflare account, run
+`deploy/macos/install-named-tunnel.sh media.example.com` instead. It logs in to Cloudflare
+(once, in the browser), creates a named tunnel `mediaflow`, points the DNS record at it,
+replaces the quick-tunnel launchd job and sets `DOWNLOAD_TUNNEL_HOSTNAME`; restart the app.
+That hostname also serves the whole app directly (uploads there are limited to 100 MB).
+
 Each photo has **Download photo** and **Upscale image to 4K** controls. Upscaling reuses
 the downloaded image, preserves the original, and produces a PNG bounded by 3840x2160
 (2160x3840 portrait; 2160x2160 square), preserving aspect ratio without cropping.

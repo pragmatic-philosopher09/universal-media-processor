@@ -3,8 +3,9 @@
 Some reverse tunnels (e.g. Tailscale Funnel over a DERP relay) cap throughput far below the
 host's uplink. A cloudflared quick tunnel is much faster but gets a new random hostname on every
 restart, so the UI stays on the stable hostname and only file downloads are redirected. The
-current hostname is read from cloudflared's metrics server (``/quicktunnel``) and verified to be
-reachable before use; when anything is off, downloads are simply served directly.
+current hostname is read from cloudflared's metrics server (``/quicktunnel``), or fixed for a
+named tunnel, and verified to be reachable before use; when anything is off, downloads are
+simply served directly.
 """
 
 from __future__ import annotations
@@ -53,21 +54,25 @@ def is_direct_host(host: str) -> bool:
 
 
 class DownloadTunnel:
-    def __init__(self, metrics: str | None) -> None:
+    def __init__(self, metrics: str | None, hostname: str | None = None) -> None:
         self.metrics = (metrics or "").strip() or None
+        self.fixed = (hostname or "").strip().lower().removeprefix("https://").strip("/") or None
         # Reachability is cached per hostname; the hostname itself is re-read every time (a local,
         # millisecond call) so a restarted tunnel's new hostname is picked up immediately.
         self._checked: tuple[str, bool, float] | None = None
         self._lock = anyio.Lock()
 
     async def hostname(self) -> str | None:
-        if not self.metrics:
+        if self.fixed:
+            candidate = self.fixed
+        elif not self.metrics:
             return None
-        try:
-            candidate = await anyio.to_thread.run_sync(_fetch_hostname, self.metrics)
-        except Exception as exc:  # noqa: BLE001 - any failure just disables the redirect
-            log.debug("download tunnel metrics unavailable: %s", exc)
-            return None
+        else:
+            try:
+                candidate = await anyio.to_thread.run_sync(_fetch_hostname, self.metrics)
+            except Exception as exc:  # noqa: BLE001 - any failure just disables the redirect
+                log.debug("download tunnel metrics unavailable: %s", exc)
+                return None
         if not candidate:
             return None
         async with self._lock:
@@ -86,7 +91,7 @@ class DownloadTunnel:
 
     async def redirect_url(self, host: str, path: str, query: str) -> str | None:
         """Absolute URL on the tunnel for this request, or None to serve it directly."""
-        if not self.metrics or is_direct_host(host):
+        if not (self.metrics or self.fixed) or is_direct_host(host):
             return None
         hostname = await self.hostname()
         if not hostname or host.lower().split(":", 1)[0] == hostname:

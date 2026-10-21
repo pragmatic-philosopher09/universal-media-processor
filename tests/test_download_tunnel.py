@@ -89,3 +89,15 @@ def test_restarted_tunnel_hostname_is_picked_up(monkeypatch):
 
     assert anyio.run(run) == ["old.trycloudflare.com", "new.trycloudflare.com"]
     assert checked == ["old.trycloudflare.com", "new.trycloudflare.com"]
+
+
+def test_fixed_hostname_skips_metrics(monkeypatch):
+    def no_metrics(metrics):
+        raise AssertionError("metrics must not be queried for a named tunnel")
+
+    monkeypatch.setattr(download_tunnel, "_fetch_hostname", no_metrics)
+    monkeypatch.setattr(download_tunnel, "_reachable", lambda hostname: True)
+    tunnel = DownloadTunnel(None, "https://Media.Example.com/")
+    url = anyio.run(tunnel.redirect_url, "app.ts.net", "/api/jobs/a/files/0", "")
+    assert url == "https://media.example.com/api/jobs/a/files/0"
+    assert anyio.run(tunnel.redirect_url, "media.example.com", "/x", "") is None
