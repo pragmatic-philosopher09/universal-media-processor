@@ -501,8 +501,19 @@ def download_instagram_media(
         urls = fastvideosave.fetch_media_urls(target.url, settings, cancel)
         paths = fastvideosave.download_media(urls, job_dir, settings, cancel, on_progress)
     except fastvideosave.FastVideoSaveError as exc:
-        raise ExtractError(f"Backup Instagram retrieval: {exc}", "fallback") from exc
-    warnings = restore_missing_audio(paths, target.url, settings, cancel, on_progress)
+        if not (settings.snapsave_fallback_enabled and target.kind in {"post", "reel", "igtv"}):
+            raise ExtractError(f"Backup Instagram retrieval: {exc}", "fallback") from exc
+        log.warning("FastVideoSave failed (%s); trying SnapSave", exc)
+        paths = download_snapsave_videos(target, job_dir, settings, cancel, on_progress, exc)
+        source, warnings = "snapsave", []
+        if target.kind == "post":
+            warnings.append(
+                "Only the videos in this post could be retrieved right now; any photos in it "
+                "are missing. Try again later for the full post."
+            )
+    else:
+        source = "fastvideosave"
+        warnings = restore_missing_audio(paths, target.url, settings, cancel, on_progress)
     code = target.url.rstrip("/").rsplit("/", 1)[-1]
     return ExtractResult(
         items=[
@@ -511,7 +522,7 @@ def download_instagram_media(
                     "id": f"{code}-{index + 1}" if len(paths) > 1 else code,
                     "title": f"Instagram {code}",
                     "webpage_url": target.url,
-                    "format_id": "fastvideosave",
+                    "format_id": source,
                 },
                 path,
             )
@@ -522,6 +533,35 @@ def download_instagram_media(
         provider="backup service",
         warnings=warnings,
     )
+
+
+def download_snapsave_videos(
+    target: MediaURL,
+    job_dir: Path,
+    settings: Settings,
+    cancel: CancelToken,
+    on_progress: ProgressHook | None,
+    primary_error: Exception,
+) -> list[Path]:
+    """Second backup for Instagram videos; photos are not available this way."""
+    cancel.check()
+    if on_progress:
+        on_progress(0.05, "Trying another backup service")
+
+    def on_item(index: int, total: int) -> None:
+        if on_progress:
+            on_progress(0.1 + 0.8 * index / total, f"Downloading media {index + 1}/{total}")
+
+    try:
+        return snapsave.download_videos(target.url, job_dir, settings, cancel, on_item)
+    except (snapsave.SnapSaveError, OSError) as exc:
+        cancel.check()
+        log.warning("SnapSave fallback failed: %s", exc)
+        raise ExtractError(
+            f"Backup Instagram retrieval: {primary_error} A second backup service could not "
+            "retrieve it either. Photo posts are only available from the first.",
+            "fallback",
+        ) from exc
 
 
 def restore_missing_audio(

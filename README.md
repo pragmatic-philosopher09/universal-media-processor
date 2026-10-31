@@ -159,6 +159,11 @@ only) and copies its audio track onto the video without re-encoding, after check
 lengths match. If that fails the silent video is kept and the job shows a warning. Set
 `SNAPSAVE_AUDIO_ENABLED=0` to turn this off.
 
+If FastVideoSave itself fails for a post, reel or IGTV link, the server downloads the
+videos SnapSave lists for it instead (with sound). SnapSave has no photos or stories, so
+photo posts and stories still need FastVideoSave, and a post served this way warns that
+any photos are missing. Set `SNAPSAVE_FALLBACK_ENABLED=0` to turn this off.
+
 FastVideoSave moves the API host its page calls (e.g. `api.videodropper.app` →
 `api.getrequest.dev`); the server's browser only talks to allow-listed hosts, so such a
 move makes every request time out. `python -m app.fastvideosave_probe` checks the provider
@@ -168,8 +173,10 @@ Run it periodically: `deploy/macos/install-fastvideosave-probe.sh` installs an h
 launchd job; on Linux use cron or a systemd timer. Its latest report is served at
 `GET /api/providers/fastvideosave`. The scheduled GitHub workflow
 `.github/workflows/fastvideosave-health.yml` runs every 6 hours, opens a PR updating the
-bundled `app/fastvideosave_hosts.json` when the host moves, and opens an issue when the
-provider is down. FastVideoSave's Cloudflare challenges GitHub's runners, so set the
+bundled `app/fastvideosave_hosts.json` when the host moves, and opens an issue when
+Instagram retrieval is down (closing it once FastVideoSave recovers). If FastVideoSave is
+down but the SnapSave video fallback works, the probe reports `degraded` (exit code 4) and
+the workflow passes with a warning. FastVideoSave's Cloudflare challenges GitHub's runners, so set the
 repository secret `MEDIAFLOW_URL` to your deployment's public URL (plus
 `MEDIAFLOW_USERNAME`/`MEDIAFLOW_PASSWORD` if sign-in is on); the workflow then uses that
 server's hourly probe report. Without it the runner probes itself, and a Cloudflare

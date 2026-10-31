@@ -7,7 +7,7 @@ from urllib.parse import urlencode
 
 import pytest
 
-from app import extractor, fastvideosave
+from app import extractor, fastvideosave, snapsave
 from app.config import Settings
 from app.cookies import CookieSource
 from app.media import CancelToken, JobCancelled
@@ -17,6 +17,13 @@ CDN = "https://scontent.cdninstagram.com/video.mp4?signature=example"
 POST = "https://www.instagram.com/p/DWtEagdgB6n/"
 REEL = "https://www.instagram.com/reel/DWtEagdgB6n/"
 MP4 = b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 100
+
+
+@pytest.fixture(autouse=True)
+def second_backup(monkeypatch):
+    videos = MagicMock(side_effect=snapsave.SnapSaveError("second backup down"))
+    monkeypatch.setattr(snapsave, "download_videos", videos)
+    return videos
 
 
 def test_unwrap_and_validate_provider_media():
@@ -200,6 +207,68 @@ def test_fallback_failure_is_explicit(monkeypatch, tmp_path):
             CookieSource("none"),
             CancelToken(),
         )
+
+
+@pytest.mark.parametrize(("url", "warned"), [(REEL, False), (POST, True)])
+def test_second_backup_serves_videos_when_first_fails(
+    monkeypatch, tmp_path, second_backup, url, warned
+):
+    monkeypatch.setattr(
+        extractor,
+        "download_with_ytdlp",
+        MagicMock(side_effect=extractor.ExtractError("direct failure", "login")),
+    )
+    monkeypatch.setattr(
+        fastvideosave,
+        "fetch_media_urls",
+        MagicMock(side_effect=fastvideosave.FastVideoSaveError("service unavailable")),
+    )
+    second_backup.side_effect = None
+    second_backup.return_value = [tmp_path / "src-snapsave-1.mp4"]
+    settings = Settings(fastvideosave_enabled=True)
+    target = normalize_url(url, DEFAULT_ALLOWED_DOMAINS)
+    result = extractor.download(target, tmp_path, settings, CookieSource("none"), CancelToken())
+    assert second_backup.call_args.args[:3] == (target.url, tmp_path, settings)
+    assert result.items[0].format_id == "snapsave"
+    assert result.provider == "backup service"
+    assert bool(result.warnings) is warned
+
+
+@pytest.mark.parametrize(
+    ("url", "enabled"),
+    [("https://www.instagram.com/stories/test/123/", True), (REEL, False)],
+)
+def test_second_backup_skipped_for_stories_or_when_disabled(
+    monkeypatch, tmp_path, second_backup, url, enabled
+):
+    monkeypatch.setattr(
+        extractor,
+        "download_with_ytdlp",
+        MagicMock(side_effect=extractor.ExtractError("direct failure", "login")),
+    )
+    monkeypatch.setattr(
+        fastvideosave,
+        "fetch_media_urls",
+        MagicMock(side_effect=fastvideosave.FastVideoSaveError("service unavailable")),
+    )
+    with pytest.raises(extractor.ExtractError, match="service unavailable"):
+        extractor.download(
+            normalize_url(url, DEFAULT_ALLOWED_DOMAINS),
+            tmp_path,
+            Settings(fastvideosave_enabled=True, snapsave_fallback_enabled=enabled),
+            CookieSource("none"),
+            CancelToken(),
+        )
+    second_backup.assert_not_called()
+
+
+def test_hidden_provider_error_panel_is_ignored():
+    page = MagicMock()
+    page.get_by_text.return_value.count.return_value = 1
+    page.get_by_text.return_value.nth.return_value.is_visible.return_value = False
+    assert not fastvideosave.provider_error_shown(page)
+    page.get_by_text.return_value.nth.return_value.is_visible.return_value = True
+    assert fastvideosave.provider_error_shown(page)
 
 
 def test_captured_error_is_detectable_when_ytdlp_returns_none():

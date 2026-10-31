@@ -12,9 +12,13 @@ FastVideoSave's Cloudflare blocks datacenter IPs such as GitHub's runners, so th
 workflow first asks a deployed server what it saw (--from-server URL) and only probes from
 the runner when no recent server report is available.
 
+When FastVideoSave is broken the SnapSave fallback (used for Instagram videos) is checked
+too: if it works the status is "degraded" - videos still download, photos/stories do not.
+
 Prints one JSON status line on stdout. Exit codes: 0 healthy, 10 healthy after learning a
-new API host, 1 broken, 2 inconclusive (this network is challenged by Cloudflare),
-3 no recent server report (--from-server only).
+new API host, 4 degraded (FastVideoSave broken, video fallback working), 1 broken,
+2 inconclusive (this network is challenged by Cloudflare), 3 no recent server report
+(--from-server only).
 """
 
 from __future__ import annotations
@@ -45,19 +49,29 @@ from .fastvideosave import (
     fetch_media_urls,
     launch_browser,
     learned_hosts_file,
+    provider_error_shown,
     provider_page_url,
     read_api_hosts,
     write_api_hosts,
 )
 from .media import CancelToken
+from .snapsave import SnapSaveError, fetch_video_urls
 
 DEFAULT_PROBE_URLS = (
     "https://www.instagram.com/reel/Dd_rcmHoBqo/",
     "https://www.instagram.com/p/DHZuFemSDC7/",
 )
-EXIT_OK, EXIT_BROKEN, EXIT_BLOCKED, EXIT_NO_REPORT, EXIT_ADAPTED = 0, 1, 2, 3, 10
+EXIT_OK, EXIT_BROKEN, EXIT_BLOCKED, EXIT_NO_REPORT, EXIT_DEGRADED, EXIT_ADAPTED = 0, 1, 2, 3, 4, 10
 STATUS_FILE_NAME = "fastvideosave-probe.json"
-PUBLIC_REPORT_KEYS = ("status", "checked_at", "new_hosts", "error", "hint", "diagnostics")
+PUBLIC_REPORT_KEYS = (
+    "status",
+    "checked_at",
+    "new_hosts",
+    "error",
+    "hint",
+    "fallback",
+    "diagnostics",
+)
 MEDIA_MARKERS = ("cdninstagram.com", "fbcdn.net")
 log = logging.getLogger("fastvideosave_probe")
 
@@ -84,6 +98,7 @@ def discover_api_hosts(
     from playwright.sync_api import sync_playwright
 
     responses = []
+    failed: list[str] = []
     with sync_playwright() as playwright:
         browser = launch_browser(playwright, settings)
         try:
@@ -104,12 +119,24 @@ def discover_api_hosts(
                     responses.append(r) if r.request.resource_type in {"fetch", "xhr"} else None
                 ),
             )
+            page.on(
+                "requestfailed",
+                lambda r: (
+                    failed.append(f"{urlsplit(r.url).hostname} {r.failure}")
+                    if r.resource_type in {"fetch", "xhr"}
+                    else None
+                ),
+            )
             landing = page.goto(provider_page_url(url), wait_until="domcontentloaded")
             deadline = time.monotonic() + timeout
             while time.monotonic() < deadline and not page.locator(MEDIA_SELECTOR).count():
+                if failed and provider_error_shown(page):
+                    break
                 page.wait_for_timeout(250)
             if diagnostics is not None:
                 diagnostics.update(page_diagnostics(page, landing, responses))
+                if failed:
+                    diagnostics["failed_requests"] = failed[:10]
             hosts: list[str] = []
             for response in responses:
                 host = urlsplit(response.url).hostname or ""
@@ -159,6 +186,32 @@ def check(urls: Sequence[str], settings: Settings, hosts: Collection[str]) -> st
     return error
 
 
+def check_fallback(urls: Sequence[str], settings: Settings) -> str | None:
+    """Return None when SnapSave lists a video for any probe URL, otherwise the last error."""
+    if not settings.snapsave_fallback_enabled:
+        return "disabled"
+    error = "no probe URLs"
+    for url in urls:
+        try:
+            if fetch_video_urls(url, settings, CancelToken()):
+                return None
+            error = "no videos"
+        except SnapSaveError as exc:
+            error = str(exc)
+        except Exception as exc:
+            error = type(exc).__name__
+        log.warning("Fallback probe %s failed: %s", url, error)
+    return error
+
+
+def with_fallback(urls: Sequence[str], settings: Settings, report: dict) -> tuple[int, dict]:
+    """A broken FastVideoSave is only degraded while the video fallback still works."""
+    fallback_error = check_fallback(urls, settings)
+    if fallback_error is None:
+        return EXIT_DEGRADED, {**report, "status": "degraded", "fallback": "ok"}
+    return EXIT_BROKEN, {**report, "fallback": f"failed: {fallback_error}"}
+
+
 def run(urls: Sequence[str], settings: Settings, hosts_file: Path) -> tuple[int, dict]:
     stored = read_api_hosts(hosts_file)
     hosts = browser_hosts(settings) | set(stored)
@@ -184,16 +237,22 @@ def run(urls: Sequence[str], settings: Settings, hosts_file: Path) -> tuple[int,
             "diagnostics": diagnostics,
         }
     if not new:
-        return EXIT_BROKEN, {
-            "status": "broken",
-            "error": error,
-            "observed_hosts": discovered,
-            "hint": "No new API host found; FastVideoSave may be down or its page changed.",
-            "diagnostics": diagnostics,
-        }
+        return with_fallback(
+            urls,
+            settings,
+            {
+                "status": "broken",
+                "error": error,
+                "observed_hosts": discovered,
+                "hint": "No new API host found; FastVideoSave may be down or its page changed.",
+                "diagnostics": diagnostics,
+            },
+        )
     retry_error = check(urls, settings, hosts | set(new))
     if retry_error is not None:
-        return EXIT_BROKEN, {"status": "broken", "error": retry_error, "observed_hosts": new}
+        return with_fallback(
+            urls, settings, {"status": "broken", "error": retry_error, "observed_hosts": new}
+        )
     write_api_hosts(hosts_file, new + [host for host in stored if host not in new])
     log.warning("FastVideoSave moved; learned %s into %s", ", ".join(new), hosts_file)
     return EXIT_ADAPTED, {
@@ -268,6 +327,8 @@ def from_server(
     report = {"source": "server", **probe}
     if status == "blocked":
         return EXIT_BLOCKED, report
+    if status == "degraded":
+        return EXIT_DEGRADED, report
     if status not in {"ok", "adapted"}:
         return EXIT_BROKEN, report
     current = read_api_hosts(hosts_file)

@@ -159,6 +159,8 @@ class Settings:
     fastvideosave_browser_channel: str | None = None
     # Restore sound to FastVideoSave videos Instagram served without audio, via SnapSave.
     snapsave_audio_enabled: bool = True
+    # When FastVideoSave fails for an Instagram video, use SnapSave's copy instead.
+    snapsave_fallback_enabled: bool = True
     # host:port of a cloudflared quick tunnel's metrics server. When set, file downloads requested
     # through another public hostname are redirected to the (faster) tunnel hostname.
     download_tunnel_metrics: str | None = None
@@ -258,6 +260,7 @@ class Settings:
             fastvideosave_enabled=_bool("FASTVIDEOSAVE_ENABLED", False),
             fastvideosave_browser_channel=_str("FASTVIDEOSAVE_BROWSER_CHANNEL"),
             snapsave_audio_enabled=_bool("SNAPSAVE_AUDIO_ENABLED", True),
+            snapsave_fallback_enabled=_bool("SNAPSAVE_FALLBACK_ENABLED", True),
             download_tunnel_metrics=_str("DOWNLOAD_TUNNEL_METRICS"),
             download_tunnel_hostname=_str("DOWNLOAD_TUNNEL_HOSTNAME"),
             ffmpeg_bin=_str("FFMPEG_BIN", "ffmpeg") or "ffmpeg",

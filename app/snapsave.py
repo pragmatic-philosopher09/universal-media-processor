@@ -1,8 +1,9 @@
-"""Restores sound to Instagram videos that FastVideoSave returns without an audio track.
+"""SnapSave: restores sound to silent FastVideoSave videos and is the second Instagram backup.
 
 Instagram now serves many reels as separate DASH video and audio streams, and FastVideoSave
 only returns the video stream. SnapSave's public page returns the muxed file; its audio track
-is copied (not re-encoded) onto the FastVideoSave video. Public links only: no cookies or keys.
+is copied (not re-encoded) onto the FastVideoSave video. When FastVideoSave itself fails,
+SnapSave's videos are used directly. Public links only: no cookies or keys.
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ import os
 import subprocess
 import time
 import urllib.request
+from collections.abc import Callable
 from http.client import HTTPException
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -33,6 +35,7 @@ PAGE = "https://snapsave.app/instagram-reels-video-download"
 FETCH_TIMEOUT = 30
 DOWNLOAD_TIMEOUT = 90
 MAX_DURATION_GAP = 1.0
+MAX_ITEMS = 20
 log = logging.getLogger(__name__)
 
 
@@ -174,15 +177,44 @@ def is_silent_video(path: Path, settings: Settings) -> bool:
     return video and not audio
 
 
-def add_audio(video: Path, post_url: str, settings: Settings, cancel: CancelToken) -> None:
-    """Copy SnapSave's audio track onto `video` in place. Raises SnapSaveError on failure."""
-    _, _, duration = stream_summary(video, settings)
+def fetch_video_urls_with_retry(url: str, settings: Settings, cancel: CancelToken) -> list[str]:
     try:
-        links = fetch_video_urls(post_url, settings, cancel)
+        return fetch_video_urls(url, settings, cancel)
     except SnapSaveError as exc:
         # SnapSave intermittently stalls on a first request; one fresh attempt usually works.
         log.info("SnapSave attempt 1/2 failed (%s); retrying", exc)
-        links = fetch_video_urls(post_url, settings, cancel)
+        return fetch_video_urls(url, settings, cancel)
+
+
+def download_videos(
+    post_url: str,
+    job_dir: Path,
+    settings: Settings,
+    cancel: CancelToken,
+    on_item: Callable[[int, int], None] | None = None,
+) -> list[Path]:
+    """Download every video SnapSave lists for `post_url` (with sound) into `job_dir`."""
+    links = fetch_video_urls_with_retry(post_url, settings, cancel)
+    if len(links) > MAX_ITEMS:
+        raise SnapSaveError("SnapSave returned too many items.")
+    paths: list[Path] = []
+    try:
+        for index, link in enumerate(links):
+            if on_item:
+                on_item(index, len(links))
+            path = job_dir / f"src-snapsave-{index + 1}.mp4"
+            paths.append(download(link, path, settings, cancel))
+    except BaseException:
+        for path in paths:
+            path.unlink(missing_ok=True)
+        raise
+    return paths
+
+
+def add_audio(video: Path, post_url: str, settings: Settings, cancel: CancelToken) -> None:
+    """Copy SnapSave's audio track onto `video` in place. Raises SnapSaveError on failure."""
+    _, _, duration = stream_summary(video, settings)
+    links = fetch_video_urls_with_retry(post_url, settings, cancel)
     if len(links) != 1:
         raise SnapSaveError("SnapSave returned several items, so the audio could not be matched.")
     donor = video.with_name(video.stem + "-snapsave.part")

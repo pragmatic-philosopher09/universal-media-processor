@@ -1,7 +1,10 @@
 name: FastVideoSave health
 
 # Checks the Instagram fallback every 6 hours. If FastVideoSave moved its API, this workflow
-# opens a PR updating app/fastvideosave_hosts.json; if it is down, an issue is opened.
+# opens a PR updating app/fastvideosave_hosts.json; if Instagram retrieval is down, an issue is
+# opened (and closed again once FastVideoSave is healthy). When only FastVideoSave is down but
+# the SnapSave video fallback works, the run passes with a "degraded" warning: videos still
+# download, Instagram photos and stories do not.
 #
 # FastVideoSave's Cloudflare challenges GitHub's runner IPs, so the runner cannot judge the
 # provider itself. Set the MEDIAFLOW_URL secret (e.g. https://your-server) to a deployment
@@ -75,7 +78,10 @@ jobs:
           if [ "$code" = 2 ]; then
             echo "::warning::Inconclusive: Cloudflare challenged this runner. Set the MEDIAFLOW_URL secret to use a deployed server's probe report."
           fi
-          [ "$code" = 0 ] || [ "$code" = 2 ] || [ "$code" = 10 ]
+          if [ "$code" = 4 ]; then
+            echo "::warning::Degraded: FastVideoSave is failing, but Instagram videos still download through the SnapSave fallback. Instagram photos and stories are unavailable until FastVideoSave recovers."
+          fi
+          [ "$code" = 0 ] || [ "$code" = 2 ] || [ "$code" = 4 ] || [ "$code" = 10 ]
 
       - name: Open PR with the learned host
         if: steps.probe.outputs.code == '10'
@@ -98,6 +104,14 @@ jobs:
             || gh issue create --title "FastVideoSave moved its API host" --body "$body
 
           (Could not open a PR automatically; enable *Allow GitHub Actions to create pull requests* or merge branch \`$branch\` by hand.)"
+
+      - name: Close resolved outage issue
+        if: steps.probe.outputs.code == '0' || steps.probe.outputs.code == '10'
+        run: |
+          number=$(gh issue list --state open --search "in:title \"$ISSUE_TITLE\"" --json number -q '.[0].number')
+          if [ -n "$number" ]; then
+            gh issue close "$number" --comment "FastVideoSave is healthy again: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          fi
 
       - name: Report outage
         if: failure() && steps.probe.outcome == 'failure'

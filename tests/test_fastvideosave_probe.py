@@ -9,6 +9,7 @@ import pytest
 
 from app import fastvideosave, fastvideosave_probe
 from app.config import Settings
+from app.snapsave import SnapSaveError
 
 URLS = ["https://www.instagram.com/p/DWtEagdgB6n/"]
 
@@ -16,6 +17,13 @@ URLS = ["https://www.instagram.com/p/DWtEagdgB6n/"]
 @pytest.fixture
 def settings(tmp_path):
     return replace(Settings(), data_dir=tmp_path)
+
+
+@pytest.fixture(autouse=True)
+def fallback_down(monkeypatch):
+    fetch = MagicMock(side_effect=SnapSaveError("fallback down"))
+    monkeypatch.setattr(fastvideosave_probe, "fetch_video_urls", fetch)
+    return fetch
 
 
 @pytest.fixture
@@ -75,6 +83,38 @@ def test_outage_without_new_host_is_reported(monkeypatch, settings, hosts_file):
     code, report = fastvideosave_probe.run(URLS, settings, hosts_file)
     assert code == fastvideosave_probe.EXIT_BROKEN
     assert report["error"] == "did not return media"
+
+
+def test_working_fallback_makes_outage_degraded(monkeypatch, settings, hosts_file, fallback_down):
+    monkeypatch.setattr(fastvideosave_probe, "fetch_media_urls", fake_fetch("never.example"))
+    monkeypatch.setattr(fastvideosave_probe, "discover_api_hosts", MagicMock(return_value=[]))
+    fallback_down.side_effect = None
+    fallback_down.return_value = ["https://cdn.example/v.mp4"]
+    code, report = fastvideosave_probe.run(URLS, settings, hosts_file)
+    assert (code, report["status"], report["fallback"]) == (
+        fastvideosave_probe.EXIT_DEGRADED,
+        "degraded",
+        "ok",
+    )
+    assert report["error"] == "did not return media"
+
+
+def test_failed_fallback_keeps_outage_broken(monkeypatch, settings, hosts_file):
+    monkeypatch.setattr(fastvideosave_probe, "fetch_media_urls", fake_fetch("never.example"))
+    monkeypatch.setattr(fastvideosave_probe, "discover_api_hosts", MagicMock(return_value=[]))
+    code, report = fastvideosave_probe.run(URLS, settings, hosts_file)
+    assert (code, report["status"]) == (fastvideosave_probe.EXIT_BROKEN, "broken")
+    assert report["fallback"] == "failed: fallback down"
+
+
+def test_disabled_fallback_is_not_checked(monkeypatch, settings, hosts_file, fallback_down):
+    monkeypatch.setattr(fastvideosave_probe, "fetch_media_urls", fake_fetch("never.example"))
+    monkeypatch.setattr(fastvideosave_probe, "discover_api_hosts", MagicMock(return_value=[]))
+    settings = replace(settings, snapsave_fallback_enabled=False)
+    code, report = fastvideosave_probe.run(URLS, settings, hosts_file)
+    assert code == fastvideosave_probe.EXIT_BROKEN
+    assert report["fallback"] == "failed: disabled"
+    fallback_down.assert_not_called()
 
 
 def test_discovery_blocks_third_party_pages_but_sees_any_data_host():
@@ -144,6 +184,7 @@ def test_from_server_copies_learned_hosts(monkeypatch, tmp_path):
     [
         (server_reply("broken"), fastvideosave_probe.EXIT_BROKEN),
         (server_reply("blocked"), fastvideosave_probe.EXIT_BLOCKED),
+        (server_reply("degraded"), fastvideosave_probe.EXIT_DEGRADED),
         (server_reply("ok", age=timedelta(hours=5)), fastvideosave_probe.EXIT_NO_REPORT),
         ({"last_probe": None}, fastvideosave_probe.EXIT_NO_REPORT),
     ],

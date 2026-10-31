@@ -230,6 +230,16 @@ def provider_page_url(url: str) -> str:
 
 MEDIA_SELECTOR = 'video source[src], video[src], a[aria-label="Save Image"]'
 MEDIA_SCRIPT = "(els) => els.map(e => e.href || e.src).filter(Boolean)"
+# The page keeps its error panel in the DOM (hidden) until a lookup fails, so check visibility.
+PROVIDER_ERROR_TEXTS = ("Oops! Something went wrong", "download this link")
+
+
+def provider_error_shown(page) -> bool:
+    for text in PROVIDER_ERROR_TEXTS:
+        matches = page.get_by_text(text)
+        if any(matches.nth(i).is_visible() for i in range(matches.count())):
+            return True
+    return False
 
 
 def _fetch_media_urls_once(
@@ -280,7 +290,7 @@ def _fetch_media_urls_once(
                             "The backup service returned too many media items."
                         )
                     return urls
-                if page.get_by_text("Oops! Something went wrong", exact=True).count():
+                if provider_error_shown(page):
                     raise FastVideoSaveError(
                         "The backup service could not retrieve this media. The account may be "
                         "private, the story expired, or the provider temporarily unavailable."

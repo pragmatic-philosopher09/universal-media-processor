@@ -125,3 +125,35 @@ def test_non_mp4_download_is_rejected(monkeypatch, settings, tmp_path):
     with pytest.raises(snapsave.SnapSaveError):
         snapsave.download(LINK, tmp_path / "x.part", settings, CancelToken())
     assert not (tmp_path / "x.part").exists()
+
+
+def test_download_videos_saves_each_link(monkeypatch, settings, tmp_path):
+    monkeypatch.setattr(snapsave, "fetch_video_urls", MagicMock(return_value=[LINK, LINK]))
+    monkeypatch.setattr(snapsave, "download", lambda link, path, *a: path)
+    seen = []
+    paths = snapsave.download_videos(
+        "https://www.instagram.com/reel/x/",
+        tmp_path,
+        settings,
+        CancelToken(),
+        lambda i, n: seen.append((i, n)),
+    )
+    assert [p.name for p in paths] == ["src-snapsave-1.mp4", "src-snapsave-2.mp4"]
+    assert seen == [(0, 2), (1, 2)]
+
+
+def test_download_videos_cleans_up_on_failure(monkeypatch, settings, tmp_path):
+    monkeypatch.setattr(snapsave, "fetch_video_urls", MagicMock(return_value=[LINK, LINK]))
+
+    def download(link, path, *args):
+        if path.name.endswith("2.mp4"):
+            raise snapsave.SnapSaveError("broken")
+        path.write_bytes(b"v")
+        return path
+
+    monkeypatch.setattr(snapsave, "download", download)
+    with pytest.raises(snapsave.SnapSaveError):
+        snapsave.download_videos(
+            "https://www.instagram.com/reel/x/", tmp_path, settings, CancelToken()
+        )
+    assert not list(tmp_path.glob("src-snapsave-*"))
