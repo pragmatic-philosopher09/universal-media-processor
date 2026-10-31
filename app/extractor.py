@@ -508,8 +508,8 @@ def download_instagram_media(
         source, warnings = "snapsave", []
         if target.kind == "post":
             warnings.append(
-                "Only the videos in this post could be retrieved right now; any photos in it "
-                "are missing. Try again later for the full post."
+                "Retrieved the videos only. If this post also contains photos, they could not "
+                "be retrieved right now; try again later for the full post."
             )
     else:
         source = "fastvideosave"
