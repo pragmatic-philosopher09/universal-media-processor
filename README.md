@@ -66,7 +66,7 @@ What this app does instead:
 |---|---|---|---|
 | Instagram | 1080p, usually 30 fps | mostly login-walled | see [Logins](#logins-stories-private-accounts--and-most-reels) |
 | YouTube | up to 4K/8K | yes from home/office IPs; **cloud IPs get "confirm you're not a bot"** (the app retries with the TV client, then needs `YOUTUBE_COOKIES` or `PROXY_URL`) | needs a JS runtime (Node ≥ 22 or Deno) for all formats; clips longer than `MAX_SOURCE_DURATION_SECONDS` are refused |
-| TikTok | 1080p, 30 fps (some 60) | yes from home IPs; **cloud IP ranges are blocked outright** (`PROXY_URL` only) | also geo-blocked in some countries (e.g. India) — the server's network matters, not yours |
+| TikTok | 1080p, 30 fps (some 60) | yes from home IPs; **cloud IP ranges are blocked outright** (`PROXY_URL` only) | also geo-blocked in some countries (e.g. India) — the server's network matters, not yours; `docker compose -f docker-compose.yml -f docker-compose.vpn.yml up -d` routes it through a gluetun VPN sidecar (see that file) |
 | DeviantArt | original image / 1080p film | yes for public deviations | mature content needs an `auth` cookie; images are upscaled (Lanczos + CAS) in Enhance mode |
 
 ## Quick start
