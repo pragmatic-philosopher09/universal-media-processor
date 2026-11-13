@@ -9,9 +9,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PLAYWRIGHT_BROWSERS_PATH=/opt/playwright \
     NODE_VERSION=22.23.3
 
-# ffmpeg for downloads/enhancement; Node.js >= 22 is yt-dlp's JavaScript runtime for YouTube.
+# ffmpeg for downloads/enhancement; Node.js >= 22 is yt-dlp's JavaScript runtime for YouTube;
+# tor is started on demand for platforms that block the host's country (see TOR_MODE).
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ffmpeg ca-certificates curl xz-utils \
+    && apt-get install -y --no-install-recommends ffmpeg ca-certificates curl xz-utils tor \
     && ARCH="$(dpkg --print-architecture)" \
     && case "$ARCH" in amd64) NODE_ARCH=x64 ;; arm64) NODE_ARCH=arm64 ;; *) echo "unsupported arch $ARCH" && exit 1 ;; esac \
     && curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${NODE_ARCH}.tar.xz" -o /tmp/node.tar.xz \
@@ -20,7 +21,7 @@ RUN apt-get update \
     && rm -f /tmp/node.tar.xz \
     && apt-get purge -y --auto-remove curl xz-utils \
     && rm -rf /var/lib/apt/lists/* \
-    && node --version && ffmpeg -version | head -1
+    && node --version && ffmpeg -version | head -1 && command -v tor
 
 WORKDIR /app
 COPY requirements.txt ./
