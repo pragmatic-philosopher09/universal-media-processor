@@ -91,6 +91,17 @@ docker build -t reel-downloader . && docker run -p 8000:8000 -v reel-data:/data 
 
 Instagram changes often; if downloads start failing, rebuild the image / `pip install -U yt-dlp`.
 
+### TikTok from a blocked country (e.g. India)
+
+TikTok redirects blocked countries to `/in/about`, so yt-dlp reports "Unexpected response from webpage request". Send only TikTok through a proxy outside the region. The quick, account-free way is a local Tor client with a US exit (slow, ~300 KB/s, and some exits get blocked):
+
+```bash
+brew install tor && tor --SocksPort 9150 --ExitNodes '{us}' --StrictNodes 1
+TIKTOK_PROXY=socks5://127.0.0.1:9150 uvicorn app.main:app --host 127.0.0.1 --port 8000
+```
+
+For something steadier, use the gluetun VPN override: `WIREGUARD_PRIVATE_KEY=… docker compose -f docker-compose.yml -f docker-compose.vpn.yml up -d --build`.
+
 ### Render (free tier, downloads only)
 
 [`render.yaml`](render.yaml) is a Render Blueprint. In the Render dashboard: **New → Blueprint**,
