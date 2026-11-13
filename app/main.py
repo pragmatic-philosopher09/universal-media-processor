@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import ipaddress
 import logging
 import platform
@@ -20,6 +21,7 @@ from .cookies import CookieError
 from .enhance_ai import ai_capabilities
 from .jobs import JobManager, JobNotFound, JobOptions, TooManyJobs
 from .media import choose_encoder, list_encoders
+from .tor import shutdown_tor, tor_available
 from .urls import PLATFORMS, InvalidURL
 
 log = logging.getLogger(__name__)
@@ -69,6 +71,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             yield
         finally:
             await manager.stop()
+            await asyncio.to_thread(shutdown_tor)
 
     app = FastAPI(
         title="Media Downloader (Instagram · YouTube · TikTok · DeviantArt)",
@@ -120,6 +123,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 }
                 for p in PLATFORMS.values()
             ],
+            "tor": {
+                "mode": settings.tor_mode,
+                "available": tor_available(settings),
+                "platforms": [p for p in settings.tor_platforms if settings.tor_eligible(p)],
+            },
             "stories_auth_configured": settings.stories_auth_configured,
             "allow_user_cookies": settings.allow_user_cookies,
             "yt_dlp_version": yt_dlp.version.__version__,
