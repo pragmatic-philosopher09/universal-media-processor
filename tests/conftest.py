@@ -25,6 +25,7 @@ def settings(tmp_path: Path) -> Settings:
         x264_crf=30,
         interp_quality="fast",
         ai_engine="off",
+        tor_mode="off",
         max_concurrent_jobs=2,
         max_jobs_per_ip=2,
         job_ttl_minutes=1,

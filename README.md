@@ -98,7 +98,7 @@ What this app does instead:
 |---|---|---|---|
 | Instagram | 1080p, usually 30 fps | mostly login-walled | see [Logins](#logins-stories-private-accounts--and-most-reels) |
 | YouTube | up to 4K/8K | yes from home/office IPs; **cloud IPs get "confirm you're not a bot"** (the app retries with the TV client, then needs `YOUTUBE_COOKIES` or `PROXY_URL`) | needs a JS runtime (Node ≥ 22 or Deno) for all formats; clips longer than `MAX_SOURCE_DURATION_SECONDS` are refused |
-| TikTok | 1080p, 30 fps (some 60) | yes from home IPs; **cloud IP ranges are blocked outright** (`PROXY_URL` only) | also geo-blocked in some countries (e.g. India) — the server's network matters, not yours |
+| TikTok | 1080p, 30 fps (some 60) | yes from home IPs; **cloud IP ranges are blocked outright** (`PROXY_URL` only) | also geo-blocked in some countries (e.g. India) — the server's network matters, not yours; the app then retries through its built-in Tor client when `tor` is installed (see *TikTok from a blocked country*) |
 | DeviantArt | original image / 1080p film | yes for public deviations | mature content needs an `auth` cookie; images are upscaled (Lanczos + CAS) in Enhance mode |
 
 ## Quick start
@@ -275,6 +275,20 @@ docker build -t reel-downloader . && docker run -p 8000:8000 -v reel-data:/data 
 
 Instagram changes often; if downloads start failing, rebuild the image / `pip install -U yt-dlp`.
 
+### TikTok from a blocked country (e.g. India)
+
+TikTok redirects blocked countries to `/in/about`, so yt-dlp reports "Unexpected response from
+webpage request". The app handles this itself: when a TikTok download fails that way, it starts
+a local [Tor](https://www.torproject.org/) client with US exit nodes, retries through it, and
+stops Tor when the app exits. You only need `tor` installed (`brew install tor` /
+`apt install tor`; the Docker image already includes it). The job's stage shows
+"Routing TikTok through Tor".
+
+Tor is slow (~300 KB/s) and some exit nodes are blocked, so retry if it fails. Tune it with
+`TOR_MODE` (`auto` / `on` / `off`), `TOR_EXIT_COUNTRIES`, `TOR_PLATFORMS` and `TOR_BIN`. A proxy
+you configure yourself (`TIKTOK_PROXY` / `PROXY_URL`) always takes priority. If you run the app
+as a service (launchd/systemd), make sure `tor` is on its `PATH` or set `TOR_BIN`.
+
 ### Render (free tier, downloads only)
 
 [`render.yaml`](render.yaml) is a Render Blueprint. In the Render dashboard: **New → Blueprint**,
@@ -443,6 +457,7 @@ commented list. The important ones:
 | `INSTAGRAM_COOKIES`, `YOUTUBE_COOKIES`, `TIKTOK_COOKIES`, `DEVIANTART_COOKIES` | — | `Cookie:` header strings configured on the server (`IG_SESSIONID`/`IG_COOKIES` still work) |
 | `COOKIES_FILE` / `COOKIES_FROM_BROWSER` | — | shared cookies.txt, or a local browser to read from |
 | `PROXY_URL`, `<PLATFORM>_PROXY` | — | outbound proxy for yt-dlp (residential proxies get around YouTube/TikTok cloud-IP blocks) |
+| `TOR_MODE` | `auto` | built-in Tor client: `auto` retries blocked TikTok through Tor, `on` always, `off` never (`TOR_PLATFORMS`, `TOR_EXIT_COUNTRIES`, `TOR_BIN`) |
 | `MAX_SOURCE_DURATION_SECONDS` | `1800` | refuse to *download* longer videos (YouTube) |
 | `AUTO_BROWSER_COOKIES` | `local` | reuse a local browser's Instagram login for same-machine requests (`always`, `off`) |
 | `BROWSER_COOKIE_ORDER` | `safari,chrome,…` | browsers/profiles to check, yt-dlp `BROWSER[:PROFILE]` syntax |
