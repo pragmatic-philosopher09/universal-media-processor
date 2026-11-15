@@ -263,6 +263,10 @@
       urlHint.textContent = "YouTube — served natively up to the creator's upload resolution; enhancement only kicks in below the target.";
     } else if (kind === "tiktok") {
       urlHint.textContent = "TikTok — best available rendition, no watermark when the platform offers it.";
+      const tor = capabilities && capabilities.tor;
+      if (tor && tor.available && tor.platforms.includes("tiktok")) {
+        urlHint.textContent += " If TikTok is blocked from this server's country, it is retried through Tor automatically.";
+      }
     } else if (kind === "deviantart") {
       urlHint.textContent = "DeviantArt — original image file, or the highest film rendition. Images are upscaled in Enhance mode.";
     } else {

@@ -7,6 +7,7 @@ See `.env.example` and the README for documentation of each variable.
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -151,6 +152,15 @@ class Settings:
     # via <PLATFORM>_PROXY. Residential proxies are the only real fix for cloud-IP blocks.
     proxy_url: str | None = None
     platform_proxies: dict[str, str] = field(default_factory=dict)
+    # Built-in Tor client for platforms that block the server's country (TikTok in India, ...).
+    # auto = only retry through Tor after a geo-block error, on = always use it for
+    # tor_platforms, off = never. An explicit proxy for the platform always wins.
+    tor_mode: str = "auto"
+    tor_bin: str | None = None
+    tor_exit_countries: tuple[str, ...] = ("us",)
+    tor_platforms: tuple[str, ...] = ("tiktok",)
+    tor_socks_port: int = 0
+    tor_bootstrap_timeout: int = 90
     # local = use the operator's own browser login for requests from this machine,
     # always = for every request (single-user deployments only), off = never
     auto_browser_cookies: str = "local"
@@ -216,6 +226,23 @@ class Settings:
         auto_browser = (_str("AUTO_BROWSER_COOKIES", "local") or "local").lower()
         if auto_browser not in {"local", "always", "off"}:
             raise ValueError("AUTO_BROWSER_COOKIES must be local, always or off")
+        tor_mode = (_str("TOR_MODE", "auto") or "auto").lower()
+        if tor_mode not in {"auto", "on", "off"}:
+            raise ValueError("TOR_MODE must be auto, on or off")
+        tor_countries = tuple(
+            c.strip().lower()
+            for c in (_str("TOR_EXIT_COUNTRIES", "us") or "").split(",")
+            if c.strip()
+        )
+        if any(not re.fullmatch(r"[a-z]{2}", c) for c in tor_countries):
+            raise ValueError("TOR_EXIT_COUNTRIES must be two-letter country codes, e.g. us,nl")
+        tor_platforms = tuple(
+            p.strip().lower()
+            for p in (_str("TOR_PLATFORMS", "tiktok") or "").split(",")
+            if p.strip()
+        )
+        if unknown := [p for p in tor_platforms if p not in PLATFORMS]:
+            raise ValueError(f"TOR_PLATFORMS has unknown platform(s): {', '.join(unknown)}")
         browser_order_raw = _str("BROWSER_COOKIE_ORDER")
         # Profile names are case-sensitive paths on Linux; parse_browser_spec lowercases the
         # browser part later.
@@ -255,6 +282,12 @@ class Settings:
                 for platform in PLATFORMS
                 if (value := _str(f"{platform.upper()}_PROXY"))
             },
+            tor_mode=tor_mode,
+            tor_bin=_str("TOR_BIN"),
+            tor_exit_countries=tor_countries,
+            tor_platforms=tor_platforms,
+            tor_socks_port=_int("TOR_SOCKS_PORT", 0),
+            tor_bootstrap_timeout=max(10, _int("TOR_BOOTSTRAP_TIMEOUT", 90)),
             auto_browser_cookies=auto_browser,
             browser_cookie_order=browser_order,
             fastvideosave_enabled=_bool("FASTVIDEOSAVE_ENABLED", False),
@@ -298,6 +331,14 @@ class Settings:
 
     def proxy_for(self, platform: str) -> str | None:
         return self.platform_proxies.get(platform) or self.proxy_url
+
+    def tor_eligible(self, platform: str) -> bool:
+        """Whether this platform may be routed through the built-in Tor client."""
+        return (
+            self.tor_mode != "off"
+            and platform in self.tor_platforms
+            and not self.proxy_for(platform)
+        )
 
     def login_configured(self, platform: str) -> bool:
         return bool(

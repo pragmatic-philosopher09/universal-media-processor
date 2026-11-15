@@ -27,6 +27,7 @@ from . import deviantart, fastvideosave, snapsave
 from .config import Settings
 from .cookies import CookieSource, apply_cookie_source_to_opts, inject_cookies
 from .media import CancelToken, JobCancelled
+from .tor import TorError, get_tor
 from .urls import PLATFORMS, MediaURL, normalize_url
 
 log = logging.getLogger(__name__)
@@ -327,6 +328,9 @@ def classify_error(message: str) -> tuple[str, str]:
         or "blocked from accessing" in lower
     ):
         return "ip_blocked", text
+    if "unexpected response from webpage request" in lower:
+        # TikTok redirects blocked countries / datacenter IPs to a page with no video data
+        return "geo_blocked", text
     if "log in" in lower or "login" in lower or "cookies" in lower or "checkpoint" in lower:
         return "login", text
     if ("rate" in lower and "limit" in lower) or "429" in lower or "too many requests" in lower:
@@ -399,6 +403,13 @@ def friendly_error(
         return (
             f"{name} blocks this server's IP range outright. Run the app on your own computer or "
             "set PROXY_URL to a residential proxy — cookies don't help here."
+        )
+    if kind == "geo_blocked":
+        return (
+            f"{name} isn't serving this server's network (it blocks some countries, e.g. India, "
+            f"and datacenter IPs). Install Tor on the server and the app will route {name} "
+            f"through it automatically, or set {platform.upper()}_PROXY to a proxy in a "
+            "supported country."
         )
     if kind == "rate_limit":
         return f"{name} is rate-limiting this server. Wait a few minutes and try again."
@@ -670,7 +681,7 @@ def download_with_ytdlp(
 
     single_item = target.kind == "story" or target.platform != "instagram"
 
-    def run(extractor_args: dict[str, Any] | None = None):
+    def run(proxy: str | None, extractor_args: dict[str, Any] | None = None):
         opts = build_ydl_opts(
             job_dir,
             settings,
@@ -679,29 +690,70 @@ def download_with_ytdlp(
             hook,
             single_item=single_item,
             max_duration=settings.max_source_duration_seconds,
-            proxy=settings.proxy_for(target.platform),
+            proxy=proxy,
             extractor_args=extractor_args,
         )
+        logger.messages.clear()
         with yt_dlp.YoutubeDL(opts) as ydl:
             opts["format"].bind(ydl)
             inject_cookies(ydl.cookiejar, cookie_source)
-            return ydl.extract_info(url, download=True)
+            info = ydl.extract_info(url, download=True)
+        if not info:
+            # ignoreerrors=True turns extraction failures into a logged message and None;
+            # raise it again so the retry logic below (Tor, YouTube TV client) can see it.
+            message = next((m for m in reversed(logger.messages) if "ERROR" in m), None)
+            if message:
+                raise DownloadError(message)
+        return info
+
+    def tor_proxy() -> str:
+        if on_progress:
+            on_progress(0.0, f"Routing {PLATFORMS[target.platform].name} through Tor")
+        try:
+            return get_tor(settings).ensure(cancel)
+        except TorError as exc:
+            raise ExtractError(
+                f"{PLATFORMS[target.platform].name} blocks this network and the Tor fallback "
+                f"failed: {exc}",
+                "geo_blocked",
+            ) from exc
+
+    tor_eligible = settings.tor_eligible(target.platform)
+    proxy = settings.proxy_for(target.platform)
+    if tor_eligible and settings.tor_mode == "on":
+        proxy = tor_proxy()
 
     try:
         try:
-            info = run()
+            info = run(proxy)
         except (DownloadError, ExtractorError, yt_dlp.utils.YoutubeDLError) as exc:
             kind, _ = classify_error(str(exc))
-            if target.platform != "youtube" or kind != "bot_check" or cookie_source.authenticated:
+            if tor_eligible and proxy is None and kind == "geo_blocked":
+                log.info("%s geo-blocked; retrying through Tor", target.platform)
+                try:
+                    info = run(tor_proxy())
+                except (DownloadError, ExtractorError, yt_dlp.utils.YoutubeDLError) as tor_exc:
+                    if isinstance(tor_exc, DownloadCancelled):
+                        raise
+                    raise ExtractError(
+                        f"{PLATFORMS[target.platform].name} blocked this network and the Tor "
+                        "retry failed too (the exit node may be blocked). Try again in a minute, "
+                        f"or set {target.platform.upper()}_PROXY to a proxy in a supported country.",
+                        "geo_blocked",
+                    ) from tor_exc
+            elif target.platform != "youtube" or kind != "bot_check" or cookie_source.authenticated:
                 raise
-            # Datacenter IPs trip YouTube's bot check on the web client; the TV client often
-            # doesn't. Free second attempt before giving up.
-            log.info("youtube bot check on web client; retrying with tv client")
-            if on_progress:
-                on_progress(0.0, "YouTube bot check — retrying with the TV client")
-            info = run({"youtube": {"player_client": ["tv", "default"]}})
+            else:
+                # Datacenter IPs trip YouTube's bot check on the web client; the TV client often
+                # doesn't. Free second attempt before giving up.
+                log.info("youtube bot check on web client; retrying with tv client")
+                if on_progress:
+                    on_progress(0.0, "YouTube bot check — retrying with the TV client")
+                info = run(proxy, {"youtube": {"player_client": ["tv", "default"]}})
     except DownloadCancelled as exc:
         raise JobCancelled() from exc
+    except ExtractError:
+        raise
     except (DownloadError, ExtractorError, yt_dlp.utils.YoutubeDLError) as exc:
         raise _extract_error(str(exc), target, cookie_source) from exc
 
