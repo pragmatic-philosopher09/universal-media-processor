@@ -49,6 +49,7 @@ from .fastvideosave import (
     fetch_media_urls,
     launch_browser,
     learned_hosts_file,
+    new_context,
     provider_error_shown,
     provider_page_url,
     read_api_hosts,
@@ -102,7 +103,7 @@ def discover_api_hosts(
     with sync_playwright() as playwright:
         browser = launch_browser(playwright, settings)
         try:
-            context = browser.new_context(service_workers="block")
+            context = new_context(browser)
             context.route(
                 "**/*",
                 lambda route: (

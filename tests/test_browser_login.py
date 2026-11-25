@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import shutil
 from dataclasses import replace
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -96,7 +97,7 @@ def test_story_uses_browser_login_immediately(settings, fake_download, monkeypat
 def test_story_retries_browser_login_after_backup_and_direct_fail(
     settings, monkeypatch, tiny_video
 ):
-    from app import extractor, fastvideosave
+    from app import extractor, fastvideosave, snapsave
 
     calls: list[str] = []
     provider_urls: list[str] = []
@@ -115,6 +116,9 @@ def test_story_retries_browser_login_after_backup_and_direct_fail(
         return ExtractResult(items=[item], title="t", uploader="T")
 
     monkeypatch.setattr(fastvideosave, "fetch_media_urls", provider)
+    monkeypatch.setattr(
+        snapsave, "download_videos", MagicMock(side_effect=snapsave.SnapSaveError("down"))
+    )
     monkeypatch.setattr(extractor, "download_with_ytdlp", direct)
     job = run_job(
         replace(settings, fastvideosave_enabled=True),

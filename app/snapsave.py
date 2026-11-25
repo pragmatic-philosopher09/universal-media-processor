@@ -3,7 +3,8 @@
 Instagram now serves many reels as separate DASH video and audio streams, and FastVideoSave
 only returns the video stream. SnapSave's public page returns the muxed file; its audio track
 is copied (not re-encoded) onto the FastVideoSave video. When FastVideoSave itself fails,
-SnapSave's videos are used directly. Public links only: no cookies or keys.
+SnapSave's videos are used directly; for stories, its story page also returns photos.
+Public links only: no cookies or keys.
 """
 
 from __future__ import annotations
@@ -25,6 +26,7 @@ from .fastvideosave import (
     browser_request_allowed,
     launch_browser,
     media_extension,
+    new_context,
     validate_cdn_url,
 )
 from .media import CancelToken
@@ -32,6 +34,7 @@ from .media import CancelToken
 BROWSER_HOSTS = frozenset({"snapsave.app", "challenges.cloudflare.com"})
 DOWNLOAD_DOMAIN = "rapidcdn.app"
 PAGE = "https://snapsave.app/instagram-reels-video-download"
+STORY_PAGE = "https://snapsave.app/instagram-story-download"
 FETCH_TIMEOUT = 30
 DOWNLOAD_TIMEOUT = 90
 MAX_DURATION_GAP = 1.0
@@ -58,6 +61,10 @@ def download_url_allowed(url: str) -> bool:
         return False
 
 
+def is_story(url: str) -> bool:
+    return urlsplit(url).path.startswith("/stories/")
+
+
 def fetch_video_urls(url: str, settings: Settings, cancel: CancelToken) -> list[str]:
     from playwright.sync_api import Error, sync_playwright
 
@@ -66,7 +73,7 @@ def fetch_video_urls(url: str, settings: Settings, cancel: CancelToken) -> list[
         with sync_playwright() as playwright:
             browser = launch_browser(playwright, settings)
             try:
-                context = browser.new_context(service_workers="block")
+                context = new_context(browser)
                 context.route(
                     "**/*",
                     lambda route: (
@@ -79,7 +86,7 @@ def fetch_video_urls(url: str, settings: Settings, cancel: CancelToken) -> list[
                 )
                 page = context.new_page()
                 page.set_default_timeout(15000)
-                page.goto(PAGE, wait_until="domcontentloaded")
+                page.goto(STORY_PAGE if is_story(url) else PAGE, wait_until="domcontentloaded")
                 box = page.locator("input#url")
                 box.fill(url)
                 box.press("Enter")
@@ -113,19 +120,25 @@ class _RedirectHandler(urllib.request.HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
-def download(url: str, path: Path, settings: Settings, cancel: CancelToken) -> Path:
+def download(
+    url: str, path: Path, settings: Settings, cancel: CancelToken, images: bool = False
+) -> Path:
+    """Save one SnapSave file at `path`, renamed to the image suffix when `images` allows one."""
     if not download_url_allowed(url):
         raise SnapSaveError("SnapSave returned an unexpected download address.")
     opener = urllib.request.build_opener(_RedirectHandler())
     request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
     deadline = time.monotonic() + DOWNLOAD_TIMEOUT
     size = 0
+    extension = "mp4"
     try:
         with opener.open(request, timeout=20) as response, path.open("wb") as output:
             while chunk := response.read(256 * 1024):
                 cancel.check()
-                if not size and media_extension(chunk[:32]) != "mp4":
-                    raise SnapSaveError("SnapSave download is not an MP4 video.")
+                if not size:
+                    extension = media_extension(chunk[:32])
+                    if extension != "mp4" and not images:
+                        raise SnapSaveError("SnapSave download is not an MP4 video.")
                 size += len(chunk)
                 if size > settings.max_upload_bytes or time.monotonic() > deadline:
                     raise SnapSaveError("SnapSave download was too large or too slow.")
@@ -136,6 +149,8 @@ def download(url: str, path: Path, settings: Settings, cancel: CancelToken) -> P
     except BaseException:
         path.unlink(missing_ok=True)
         raise
+    if path.suffix != "." + extension:
+        path = path.replace(path.with_suffix("." + extension))
     return path
 
 
@@ -193,7 +208,9 @@ def download_videos(
     cancel: CancelToken,
     on_item: Callable[[int, int], None] | None = None,
 ) -> list[Path]:
-    """Download every video SnapSave lists for `post_url` (with sound) into `job_dir`."""
+    """Download every video SnapSave lists for `post_url` (with sound) into `job_dir`.
+
+    For a story link SnapSave lists the account's whole current story set, photos included."""
     links = fetch_video_urls_with_retry(post_url, settings, cancel)
     if len(links) > MAX_ITEMS:
         raise SnapSaveError("SnapSave returned too many items.")
@@ -203,7 +220,7 @@ def download_videos(
             if on_item:
                 on_item(index, len(links))
             path = job_dir / f"src-snapsave-{index + 1}.mp4"
-            paths.append(download(link, path, settings, cancel))
+            paths.append(download(link, path, settings, cancel, is_story(post_url)))
     except BaseException:
         for path in paths:
             path.unlink(missing_ok=True)
