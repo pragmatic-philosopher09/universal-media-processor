@@ -190,6 +190,16 @@ def fetch_media_urls(
     raise AssertionError("Unreachable")
 
 
+def new_context(browser):
+    """Isolated provider context. FastVideoSave's API now rejects headless Chromium's
+    `HeadlessChrome` user agent, so the ordinary Chrome product name is sent instead."""
+    agent = browser.new_browser_cdp_session().send("Browser.getVersion").get("userAgent")
+    options = {"service_workers": "block"}
+    if isinstance(agent, str) and agent:
+        options["user_agent"] = agent.replace("HeadlessChrome/", "Chrome/")
+    return browser.new_context(**options)
+
+
 def launch_browser(playwright, settings: Settings):
     from playwright.sync_api import Error
 
@@ -256,7 +266,7 @@ def _fetch_media_urls_once(
             cancel.check()
             raise
         try:
-            context = browser.new_context(service_workers="block")
+            context = new_context(browser)
             context.route(
                 "**/*",
                 lambda route: (

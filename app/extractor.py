@@ -499,6 +499,9 @@ def download(
         return download_instagram_media(target, job_dir, settings, cancel, on_progress)
 
 
+SNAPSAVE_KINDS = frozenset({"post", "reel", "igtv", "story", "profile-stories"})
+
+
 def download_instagram_media(
     target: MediaURL,
     job_dir: Path,
@@ -513,7 +516,7 @@ def download_instagram_media(
         urls = fastvideosave.fetch_media_urls(target.url, settings, cancel)
         paths = fastvideosave.download_media(urls, job_dir, settings, cancel, on_progress)
     except fastvideosave.FastVideoSaveError as exc:
-        if not (settings.snapsave_fallback_enabled and target.kind in {"post", "reel", "igtv"}):
+        if not (settings.snapsave_fallback_enabled and target.kind in SNAPSAVE_KINDS):
             raise ExtractError(f"Backup Instagram retrieval: {exc}", "fallback") from exc
         log.warning("FastVideoSave failed (%s); trying SnapSave", exc)
         paths = download_snapsave_videos(target, job_dir, settings, cancel, on_progress, exc)
@@ -522,6 +525,11 @@ def download_instagram_media(
             warnings.append(
                 "Retrieved the videos only. If this post also contains photos, they could not "
                 "be retrieved right now; try again later for the full post."
+            )
+        elif target.kind == "story" and len(paths) > 1:
+            warnings.append(
+                f"The backup service cannot single out one story, so all {len(paths)} stories "
+                "this account currently has are included; the one you linked is among them."
             )
     else:
         source = "fastvideosave"
@@ -555,7 +563,7 @@ def download_snapsave_videos(
     on_progress: ProgressHook | None,
     primary_error: Exception,
 ) -> list[Path]:
-    """Second backup for Instagram videos; photos are not available this way."""
+    """Second Instagram backup: post videos only, but photos too for stories."""
     cancel.check()
     if on_progress:
         on_progress(0.05, "Trying another backup service")
@@ -569,9 +577,14 @@ def download_snapsave_videos(
     except (snapsave.SnapSaveError, OSError) as exc:
         cancel.check()
         log.warning("SnapSave fallback failed: %s", exc)
+        note = (
+            ""
+            if snapsave.is_story(target.url)
+            else " Photo posts are only available from the first."
+        )
         raise ExtractError(
             f"Backup Instagram retrieval: {primary_error} A second backup service could not "
-            "retrieve it either. Photo posts are only available from the first.",
+            f"retrieve it either.{note}",
             "fallback",
         ) from exc
 

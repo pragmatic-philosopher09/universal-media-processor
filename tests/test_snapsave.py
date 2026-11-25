@@ -127,6 +127,37 @@ def test_non_mp4_download_is_rejected(monkeypatch, settings, tmp_path):
     assert not (tmp_path / "x.part").exists()
 
 
+def fake_download_bytes(monkeypatch, data):
+    response = MagicMock()
+    response.__enter__.return_value.read.side_effect = [data, b""]
+    opener = MagicMock()
+    opener.open.return_value = response
+    monkeypatch.setattr(snapsave.urllib.request, "build_opener", lambda *a: opener)
+
+
+def test_story_photo_download_gets_image_suffix(monkeypatch, settings, tmp_path):
+    jpeg = b"\xff\xd8\xff" + b"\x00" * 40
+    fake_download_bytes(monkeypatch, jpeg)
+    path = snapsave.download(LINK, tmp_path / "s.mp4", settings, CancelToken(), images=True)
+    assert path.name == "s.jpg" and path.read_bytes() == jpeg
+    assert not (tmp_path / "s.mp4").exists()
+    fake_download_bytes(monkeypatch, jpeg)
+    with pytest.raises(snapsave.SnapSaveError):
+        snapsave.download(LINK, tmp_path / "p.mp4", settings, CancelToken())
+    assert not list(tmp_path.glob("p.*"))
+
+
+def test_story_links_use_story_page_and_allow_photos(monkeypatch, settings, tmp_path):
+    monkeypatch.setattr(snapsave, "fetch_video_urls", MagicMock(return_value=[LINK]))
+    calls = []
+    monkeypatch.setattr(snapsave, "download", lambda link, path, *a: calls.append(a[-1]) or path)
+    story = "https://www.instagram.com/stories/someone/123/"
+    snapsave.download_videos(story, tmp_path, settings, CancelToken())
+    snapsave.download_videos(POST, tmp_path, settings, CancelToken())
+    assert calls == [True, False]
+    assert snapsave.is_story(story) and not snapsave.is_story(POST)
+
+
 def test_download_videos_saves_each_link(monkeypatch, settings, tmp_path):
     monkeypatch.setattr(snapsave, "fetch_video_urls", MagicMock(return_value=[LINK, LINK]))
     monkeypatch.setattr(snapsave, "download", lambda link, path, *a: path)

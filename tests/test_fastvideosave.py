@@ -236,11 +236,9 @@ def test_second_backup_serves_videos_when_first_fails(
 
 @pytest.mark.parametrize(
     ("url", "enabled"),
-    [("https://www.instagram.com/stories/test/123/", True), (REEL, False)],
+    [("https://www.instagram.com/stories/test/123/", False), (REEL, False)],
 )
-def test_second_backup_skipped_for_stories_or_when_disabled(
-    monkeypatch, tmp_path, second_backup, url, enabled
-):
+def test_second_backup_skipped_when_disabled(monkeypatch, tmp_path, second_backup, url, enabled):
     monkeypatch.setattr(
         extractor,
         "download_with_ytdlp",
@@ -473,6 +471,40 @@ def test_provider_and_direct_failure_keeps_login_kind(monkeypatch, tmp_path, dir
         )
     assert failure.value.kind == expected
     assert "Direct Instagram retrieval also failed: direct failed" in str(failure.value)
+
+
+def test_story_falls_back_to_second_backup_with_all_stories(monkeypatch, tmp_path, second_backup):
+    monkeypatch.setattr(
+        fastvideosave,
+        "fetch_media_urls",
+        MagicMock(side_effect=fastvideosave.FastVideoSaveError("unavailable")),
+    )
+    direct = MagicMock()
+    monkeypatch.setattr(extractor, "download_with_ytdlp", direct)
+    second_backup.side_effect = None
+    second_backup.return_value = [tmp_path / "src-snapsave-1.jpg", tmp_path / "src-snapsave-2.mp4"]
+    result = extractor.download(
+        normalize_url("https://www.instagram.com/stories/nasa/123/", DEFAULT_ALLOWED_DOMAINS),
+        tmp_path,
+        Settings(fastvideosave_enabled=True),
+        CookieSource("none"),
+        CancelToken(),
+    )
+    direct.assert_not_called()
+    assert [i.is_image for i in result.items] == [True, False]
+    assert "all 2 stories" in result.warnings[0]
+
+
+def test_provider_context_hides_headless_user_agent():
+    browser = MagicMock()
+    browser.new_browser_cdp_session.return_value.send.return_value = {
+        "userAgent": "Mozilla/5.0 (Macintosh) HeadlessChrome/131.0.0.0 Safari/537.36"
+    }
+    fastvideosave.new_context(browser)
+    browser.new_context.assert_called_once_with(
+        service_workers="block",
+        user_agent="Mozilla/5.0 (Macintosh) Chrome/131.0.0.0 Safari/537.36",
+    )
 
 
 def test_provider_error_is_not_a_success(browser):

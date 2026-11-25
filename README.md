@@ -160,9 +160,11 @@ lengths match. If that fails the silent video is kept and the job shows a warnin
 `SNAPSAVE_AUDIO_ENABLED=0` to turn this off.
 
 If FastVideoSave itself fails for a post, reel or IGTV link, the server downloads the
-videos SnapSave lists for it instead (with sound). SnapSave has no photos or stories, so
-photo posts and stories still need FastVideoSave, and a post served this way warns that
-any photos are missing. Set `SNAPSAVE_FALLBACK_ENABLED=0` to turn this off.
+videos SnapSave lists for it instead (with sound). SnapSave has no post photos, so photo
+posts still need FastVideoSave, and a post served this way warns that any photos are
+missing. Story links use SnapSave's story page, which returns photos and videos but lists
+the account's whole current story set without identifying the linked one, so all of them
+are downloaded with a warning. Set `SNAPSAVE_FALLBACK_ENABLED=0` to turn this off.
 
 FastVideoSave moves the API host its page calls (e.g. `api.videodropper.app` →
 `api.getrequest.dev`); the server's browser only talks to allow-listed hosts, so such a
