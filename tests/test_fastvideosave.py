@@ -451,6 +451,30 @@ def test_provider_failure_warns_about_direct_only_results(monkeypatch, tmp_path)
     assert "photos" in result.warnings[0]
 
 
+@pytest.mark.parametrize("direct_kind,expected", [("login", "login"), ("network", "fallback")])
+def test_provider_and_direct_failure_keeps_login_kind(monkeypatch, tmp_path, direct_kind, expected):
+    monkeypatch.setattr(
+        fastvideosave,
+        "fetch_media_urls",
+        MagicMock(side_effect=fastvideosave.FastVideoSaveError("unavailable")),
+    )
+    monkeypatch.setattr(
+        extractor,
+        "download_with_ytdlp",
+        MagicMock(side_effect=extractor.ExtractError("direct failed", direct_kind)),
+    )
+    with pytest.raises(extractor.ExtractError) as failure:
+        extractor.download(
+            normalize_url("https://www.instagram.com/stories/nasa/123/", DEFAULT_ALLOWED_DOMAINS),
+            tmp_path,
+            Settings(fastvideosave_enabled=True),
+            CookieSource("none"),
+            CancelToken(),
+        )
+    assert failure.value.kind == expected
+    assert "Direct Instagram retrieval also failed: direct failed" in str(failure.value)
+
+
 def test_provider_error_is_not_a_success(browser):
     page = browser.new_context.return_value.new_page.return_value
     page.locator.return_value.evaluate_all.return_value = []

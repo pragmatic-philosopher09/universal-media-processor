@@ -460,9 +460,10 @@ def download(
                     target, job_dir, settings, cookie_source, cancel, on_progress
                 )
             except ExtractError as direct_error:
+                # Keep "login" so callers can retry with the operator's own browser login.
                 raise ExtractError(
                     f"{provider_error} Direct Instagram retrieval also failed: {direct_error}",
-                    "fallback",
+                    "login" if direct_error.login_required else "fallback",
                 ) from direct_error
             result.warnings.append(
                 "The backup Instagram service was unavailable. Direct Instagram retrieval "
