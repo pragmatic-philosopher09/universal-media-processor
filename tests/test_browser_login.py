@@ -93,6 +93,42 @@ def test_story_uses_browser_login_immediately(settings, fake_download, monkeypat
     assert job.auth == "your Firefox login"
 
 
+def test_story_retries_browser_login_after_backup_and_direct_fail(
+    settings, monkeypatch, tiny_video
+):
+    from app import extractor, fastvideosave
+
+    calls: list[str] = []
+    provider_urls: list[str] = []
+
+    def provider(url, _settings, _cancel):
+        provider_urls.append(url)
+        raise fastvideosave.FastVideoSaveError("could not retrieve this media")
+
+    def direct(target, job_dir, _settings, cookie_source, _cancel, _progress=None):
+        calls.append(cookie_source.kind)
+        if not cookie_source.authenticated:
+            raise ExtractError("Stories can only be fetched while logged in.", "login")
+        path = job_dir / "src-1234567890.mp4"
+        shutil.copyfile(tiny_video, path)
+        item = DownloadedItem(path, "1234567890", "t", "T", "tester", 64, 64, 10.0, 1.0, "f", STORY)
+        return ExtractResult(items=[item], title="t", uploader="T")
+
+    monkeypatch.setattr(fastvideosave, "fetch_media_urls", provider)
+    monkeypatch.setattr(extractor, "download_with_ytdlp", direct)
+    job = run_job(
+        replace(settings, fastvideosave_enabled=True),
+        STORY,
+        local=True,
+        monkeypatch=monkeypatch,
+        discovery=lambda _s, _p=None: found(BrowserSession("chrome", {"sessionid": "abc"})),
+    )
+    assert job.status.value == "done", job.error
+    assert calls == ["none", "browser-auto"]
+    assert len(provider_urls) == 1  # the logged-in retry never goes back to the third party
+    assert job.auth == "your Chrome login"
+
+
 def test_remote_client_never_gets_operator_cookies(settings, fake_download, monkeypatch):
     def discovery(_settings, _platform=None):
         raise AssertionError("browser cookies must not be read for remote clients")
