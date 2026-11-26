@@ -291,6 +291,17 @@ Tor is slow (~300 KB/s) and some exit nodes are blocked, so retry if it fails. T
 you configure yourself (`TIKTOK_PROXY` / `PROXY_URL`) always takes priority. If you run the app
 as a service (launchd/systemd), make sure `tor` is on its `PATH` or set `TOR_BIN`.
 
+Alternatively, the Docker VPN override routes TikTok through a Gluetun WireGuard proxy:
+
+```bash
+WIREGUARD_PRIVATE_KEY=... docker compose -f docker-compose.yml -f docker-compose.vpn.yml up -d --build
+```
+
+The override defaults to ProtonVPN free servers. Obtain a WireGuard private key from your VPN
+provider and keep it out of Git. Configure `VPN_SERVICE_PROVIDER`, `VPN_COUNTRIES`, and
+`VPN_FREE_ONLY` as needed; see the [Gluetun documentation](https://github.com/qdm12/gluetun-wiki)
+for provider requirements.
+
 ### Render (free tier, downloads only)
 
 [`render.yaml`](render.yaml) is a Render Blueprint. In the Render dashboard: **New → Blueprint**,
